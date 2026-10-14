@@ -55,18 +55,37 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # --- sco-core (external/sco-core, a git submodule) -----------------------------------------------
 # Added after CMAKE_MSVC_RUNTIME_LIBRARY above, so its libraries get the static CRT too: they link
 # into dinput8.dll, and CI's verify step checks the DLL imports no dynamic CRT.
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/sco-core/CMakeLists.txt")
-  message(FATAL_ERROR "external/sco-core is empty: the sco-core submodule isn't checked out. "
-                      "Run `git submodule update --init` (or clone with --recurse-submodules).")
+option(SCO_ASOP_HOST_COMPOSITION "Use the G10 host-source ASOP owner (requires newer host kit)" OFF)
+set(SCO_HOST_SOURCE_DIR "" CACHE PATH "Extracted host-source-sc kit (local development; published pin unchanged)")
+if(SCO_HOST_SOURCE_DIR)
+  set(SCO_CORE_SOURCE_DIR "${SCO_HOST_SOURCE_DIR}")
+else()
+  set(SCO_CORE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/sco-core")
+endif()
+if(NOT EXISTS "${SCO_CORE_SOURCE_DIR}/CMakeLists.txt")
+  message(FATAL_ERROR "Host source missing: initialize external/sco-core or set SCO_HOST_SOURCE_DIR")
 endif()
 # sco-core's tests run in sco-core's own CI, not here.
 set(SCO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 # sco-core's own CI builds it with /WX. Here a warning that only a newer toolset emits must not
 # break the product build, so sco-core's warnings stay warnings.
 set(SCO_WERROR OFF CACHE BOOL "" FORCE)
+# Retained widgets use the host's own ImGui, never renderer headers in plugins.
+if(EXISTS "${SCO_CORE_SOURCE_DIR}/include/sco/widgets_imgui.h")
+  set(SCO_WIDGETS_IMGUI ON CACHE BOOL "Host widget renderer" FORCE)
+  set(SCO_WIDGETS_IMGUI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/imgui" CACHE PATH "Host ImGui" FORCE)
+endif()
 # EXCLUDE_FROM_ALL: only the libraries dinput8 links are built, not sco-core's host tools
 # (sco-sigcheck, sco-host-sim).
-add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
+# Host-side renderer only; plugins keep renderer-neutral retained declarations.
+if(EXISTS "${SCO_CORE_SOURCE_DIR}/include/sco/widgets_imgui.h")
+  set(SCO_WIDGETS_IMGUI ON CACHE BOOL "" FORCE)
+  set(SCO_WIDGETS_IMGUI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/imgui" CACHE PATH "" FORCE)
+endif()
+add_subdirectory("${SCO_CORE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/sco-core" EXCLUDE_FROM_ALL)
+if(SCO_ASOP_HOST_COMPOSITION AND NOT TARGET sco_asop_host)
+  message(FATAL_ERROR "ASOP composition requires a host-source dependency containing G10; no fallback")
+endif()
 
 # Settings every target had: CharacterSet Unicode, ConformanceMode (/permissive-), SDLCheck (/sdl).
 # NDEBUG in Release comes from CMake's default Release flags (/O2 /Ob2 /DNDEBUG).
@@ -101,40 +120,28 @@ add_library(dinput8 SHARED
   src/hooks.cpp
   src/teleport.cpp
   src/spawner.cpp
-  src/loadout.cpp
   src/npc.cpp
-  src/build.cpp
+  src/build.cpp   # retained legacy shared helpers, not build feature
+  src/build_menu.cpp
   src/cvars.cpp
   src/missions.cpp
   src/contracts.cpp
-  src/quantum.cpp
-  src/services.cpp
-  src/fleet.cpp
-  src/outfits.cpp
   src/menu.cpp
   src/hotkeys.cpp
-  src/travel.cpp
   # Built-in plugins (src/builtins/builtins.h).
-  src/builtins/teleport_plugin.cpp
-  src/builtins/spawn_plugin.cpp
-  src/builtins/crew_plugin.cpp
-  src/builtins/loadout_plugin.cpp
-  src/builtins/quantum_plugin.cpp
-  src/builtins/build_plugin.cpp
   src/builtins/contracts_plugin.cpp
-  src/builtins/mining_plugin.cpp
-  src/builtins/multiplayer_plugin.cpp
   # Their menu tabs, drawn through sco.ui (src/builtins/tabs.h).
-  src/builtins/loadout_ui.cpp
-  src/builtins/quantum_ui.cpp
-  src/builtins/spawn_ui.cpp
-  src/builtins/crew_ui.cpp
-  src/builtins/npc_ui.cpp
   src/builtins/build_ui.cpp
-  src/builtins/multiplayer_ui.cpp
   # Manifest EnableSegmentHeap.
   src/dinput8.manifest
 )
+if(SCO_ASOP_HOST_COMPOSITION)
+  target_sources(dinput8 PRIVATE src/asop_shell.cpp src/asop_platform.cpp)
+  target_compile_definitions(dinput8 PRIVATE SCO_ASOP_HOST_COMPOSITION)
+  target_link_libraries(dinput8 PRIVATE sco_asop_host)
+else()
+  target_sources(dinput8 PRIVATE src/services.cpp src/fleet.cpp)
+endif()
 # TargetName dinput8. No dinput8_EXPORTS define: the .vcxproj had none, and the only export is
 # the DirectInput8Create forwarder in dllmain.cpp (#pragma comment(linker, "/export:...")).
 set_target_properties(dinput8 PROPERTIES OUTPUT_NAME dinput8 DEFINE_SYMBOL "")
@@ -147,38 +154,37 @@ target_link_libraries(dinput8 PRIVATE imgui d3d11 shlwapi advapi32 windowscodecs
 # The host kit (sco/app.h, with sco/scan.h, signatures, caps, the plugin loader), sco-lua with its
 # Star Citizen adapter (sco_lua_game: sco.datacore and sco.game for scripts), the detour engine, the zone tree (sco/engine/zone.h) and the CryPak adapter (sco/game/pak.h, with sco_vfs).
 target_link_libraries(dinput8 PRIVATE sco_app sco_lua sco_lua_game sco_hook sco_engine sco_pak)
-
-# NPC and inspector are external published-SDK modules; no host targets or fallback.
-
-# --- optional bridges (docs/bridges.md) ------------------------------------------------------------
-# Built-ins that link the game to another program on the same PC through sco-core's sco.ipc. Off by
-# default and never in a release: the release job packages the default build's dinput8.dll, and CI
-# builds these ON in a job of its own (artifact "bridges-test") only so they keep compiling.
-option(SCO_BRIDGE_TITANLINK "Build the Titanfall 2 bridge built-in (titanlink)" OFF)
-option(SCO_BRIDGE_VOXEL "Build the voxel-game bridge built-in (voxel_bridge)" OFF)
-if(SCO_BRIDGE_TITANLINK)
-  target_sources(dinput8 PRIVATE
-    src/builtins/titanlink/titanlink_plugin.cpp
-    src/builtins/titanlink/titanlink_overlay.cpp
-    src/builtins/titanlink/titanlink_ui.cpp)
-  target_compile_definitions(dinput8 PRIVATE SCO_BRIDGE_TITANLINK)
-  # The overlay's own window: DXGI flip swap chain through DirectComposition (d3d11 is linked above).
-  target_link_libraries(dinput8 PRIVATE dxgi dcomp)
+if(TARGET sco_widgets_imgui)
+  target_link_libraries(dinput8 PRIVATE sco_widgets_imgui)
+  target_compile_definitions(dinput8 PRIVATE SCO_WIDGETS_HOST_RENDERER)
 endif()
-if(SCO_BRIDGE_VOXEL)
-  target_sources(dinput8 PRIVATE
-    src/builtins/voxel_bridge/voxel_plugin.cpp
-    src/builtins/voxel_bridge/voxel_ui.cpp)
-  target_compile_definitions(dinput8 PRIVATE SCO_BRIDGE_VOXEL)
+if(EXISTS "${SCO_CORE_SOURCE_DIR}/include/sc_private_session.h")
+  target_compile_definitions(dinput8 PRIVATE SCO_OFFLINE_G13_HOST)
 endif()
+if(TARGET sco_game_host)
+  target_sources(dinput8 PRIVATE src/offline_host.cpp)
+  target_link_libraries(dinput8 PRIVATE sco_game_host)
+  target_compile_definitions(dinput8 PRIVATE SCO_OFFLINE_G1_HOST)
+elseif(SCO_HOST_SOURCE_DIR)
+  message(FATAL_ERROR "SCO_HOST_SOURCE_DIR lacks the required sco_game_host composition target")
+else()
+  message(STATUS "Published host pin lacks G1: offline startup refuses (no private fallback)")
+endif()
+
+# NPC, inspector, crew, spawn and loadout are external modules; no host feature fallback.
+# Loadout's G6/G7/content/widgets headers ship in the pinned sdk-v2.2.0; release staging is pending.
+
+# Bridges are independent disabled SDK modules, never host sources or default-release inputs.
+# Configure plugins/titanlink and plugins/voxel_bridge separately (docs/bridges.md).
+# The peer fixture is also a separate tools/bridge-peer configuration, using MIT wire only.
 if(SCO_BRIDGE_TITANLINK OR SCO_BRIDGE_VOXEL)
-  # A stand-in for the other program, for testing a bridge without Titanfall 2 or the voxel game:
-  # it opens a channel with nothing but sco-core's MIT SDK headers sc_ipc.h, sc_titanlink.h and
-  # sc_voxel_bridge.h (tools/bridge-peer).
-  add_executable(bridge-peer tools/bridge-peer/bridge_peer.cpp)
-  target_include_directories(bridge-peer PRIVATE external/sco-core/include)
-  target_compile_definitions(bridge-peer PRIVATE ${SCO_COMMON_DEFINES})
-  target_compile_options(bridge-peer PRIVATE ${SCO_COMMON_OPTIONS} /W3)
+  message(FATAL_ERROR "Host bridge options are retired; configure each optional plugin separately")
+endif()
+# G13 is default-on inside the approved host kit. Multiplayer is an external
+# SDK module; the retired host switch never re-adds gameplay target/registry inputs.
+option(SCO_MULTIPLAYER "Retired host-embedded multiplayer option; use plugins/multiplayer" OFF)
+if(SCO_MULTIPLAYER)
+  message(FATAL_ERROR "Multiplayer is external; configure plugins/multiplayer against a G13 SDK")
 endif()
 
 # WholeProgramOptimization + LinkTimeCodeGeneration in Release (/GL, /LTCG).
@@ -203,7 +209,7 @@ target_link_libraries(sc-offline PRIVATE imgui sco_sqlite bcrypt shell32 shlwapi
 # teleport.spatial service, in game (tools/test-plugins).
 # Built into build/test-plugins/<id>/ with its plugin.ini, ready to copy into data/plugins/.
 add_library(spawn_probe SHARED tools/test-plugins/spawn_probe/spawn_probe.c)
-target_include_directories(spawn_probe PRIVATE external/sco-core/include)
+target_include_directories(spawn_probe PRIVATE ${SCO_CORE_SOURCE_DIR}/include)
 target_link_libraries(spawn_probe PRIVATE user32)
 set(_probe_dir "${CMAKE_BINARY_DIR}/test-plugins/spawn_probe")
 set_target_properties(spawn_probe PROPERTIES
@@ -215,7 +221,7 @@ configure_file(tools/test-plugins/spawn_probe/plugin.ini "${_probe_dir}/plugin.i
 # builtins_probe exercises host feature commands and the external NPC commands in game (crew, npc, loadout, quantum,
 # build, contracts); same layout as spawn_probe.
 add_library(builtins_probe SHARED tools/test-plugins/builtins_probe/builtins_probe.c)
-target_include_directories(builtins_probe PRIVATE external/sco-core/include)
+target_include_directories(builtins_probe PRIVATE ${SCO_CORE_SOURCE_DIR}/include)
 target_link_libraries(builtins_probe PRIVATE user32)
 set(_bprobe_dir "${CMAKE_BINARY_DIR}/test-plugins/builtins_probe")
 set_target_properties(builtins_probe PROPERTIES
@@ -228,7 +234,7 @@ configure_file(tools/test-plugins/builtins_probe/plugin.ini "${_bprobe_dir}/plug
 # with ImGui the way a third-party plugin does it (src/menu_imgui.h: sc-offline's own ImGui, linked
 # in), and Ctrl+Alt+9 / Ctrl+Alt+0 bound to its commands; same layout as spawn_probe.
 add_library(ui_probe SHARED tools/test-plugins/ui_probe/ui_probe.cpp)
-target_include_directories(ui_probe PRIVATE external/sco-core/include src)
+target_include_directories(ui_probe PRIVATE ${SCO_CORE_SOURCE_DIR}/include src)
 target_compile_definitions(ui_probe PRIVATE ${SCO_COMMON_DEFINES})
 target_compile_options(ui_probe PRIVATE ${SCO_COMMON_OPTIONS} /W3)
 target_link_libraries(ui_probe PRIVATE imgui)
@@ -240,47 +246,4 @@ set_target_properties(ui_probe PROPERTIES
   ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/test-plugins")
 configure_file(tools/test-plugins/ui_probe/plugin.ini "${_uprobe_dir}/plugin.ini" COPYONLY)
 
-# --- the creative plugin (plugins/creative, data/plugins/creative) ---------------------------------
-# sc-offline's cheats (god mode, noclip, infinite ammo) as an optional native plugin on sco-core's
-# game.creative service: built only from the sco SDK's headers (tools/sdk-headers.py checks this
-# folder too, with no allow-list entry). The output is laid out the way the game reads it,
-# build/data/plugins/creative/creative.dll next to plugin.ini; the folder in the repo
-# (data/plugins/creative) holds plugin.ini and the `disabled` marker the release ships, and CI's
-# release job adds the DLL. Not part of dinput8.dll.
-add_library(sc-offline-creative MODULE plugins/creative/creative.cpp)
-target_include_directories(sc-offline-creative PRIVATE external/sco-core/include)
-target_compile_definitions(sc-offline-creative PRIVATE ${SCO_COMMON_DEFINES})
-target_compile_options(sc-offline-creative PRIVATE ${SCO_COMMON_OPTIONS} /W4 /WX)
-set(_creative_dir "${CMAKE_BINARY_DIR}/data/plugins/creative")
-set_target_properties(sc-offline-creative PROPERTIES
-  OUTPUT_NAME creative
-  PREFIX ""
-  SUFFIX ".dll"
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN ON
-  INTERPROCEDURAL_OPTIMIZATION_RELEASE ON
-  RUNTIME_OUTPUT_DIRECTORY "${_creative_dir}/$<0:>"
-  LIBRARY_OUTPUT_DIRECTORY "${_creative_dir}/$<0:>"
-  ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/plugins")
-configure_file(data/plugins/creative/plugin.ini "${_creative_dir}/plugin.ini" COPYONLY)
-
-# --- the discord plugin (plugins/discord, data/plugins/discord) -----------------------------------
-# "Playing sc-offline" on the player's Discord profile, as a plain SDK consumer (the version from
-# api->host_version(), place from teleport.spatial, ship from game.vehicles + game.entities,
-# settings through sco.settings). Same layout as creative; ships enabled (no `disabled` marker).
-add_library(sc-offline-discord MODULE plugins/discord/discord.cpp)
-target_include_directories(sc-offline-discord PRIVATE external/sco-core/include)
-target_compile_definitions(sc-offline-discord PRIVATE ${SCO_COMMON_DEFINES})
-target_compile_options(sc-offline-discord PRIVATE ${SCO_COMMON_OPTIONS} /W4 /WX)
-set(_discord_dir "${CMAKE_BINARY_DIR}/data/plugins/discord")
-set_target_properties(sc-offline-discord PROPERTIES
-  OUTPUT_NAME discord
-  PREFIX ""
-  SUFFIX ".dll"
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN ON
-  INTERPROCEDURAL_OPTIMIZATION_RELEASE ON
-  RUNTIME_OUTPUT_DIRECTORY "${_discord_dir}/$<0:>"
-  LIBRARY_OUTPUT_DIRECTORY "${_discord_dir}/$<0:>"
-  ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/plugins")
-configure_file(data/plugins/discord/plugin.ini "${_discord_dir}/plugin.ini" COPYONLY)
+# External native features are built/staged separately from published SDK archives.

@@ -17,9 +17,6 @@
 // registered tab; a plugin's tab picks any order (900 sits between Squadron 42 and Menu).
 constexpr int32_t kTabPlayer   = 100;   // loadout.player
 constexpr int32_t kTabTravel   = 200;   // quantum.travel
-constexpr int32_t kTabVehicles = 300;   // spawn.vehicles
-constexpr int32_t kTabCrew     = 400;   // crew.crew
-constexpr int32_t kTabNpcs     = 500;   // npc.npcs
 constexpr int32_t kTabBuild    = 600;   // build.build
 constexpr int32_t kTabMultiplayer = 650;   // multiplayer.session
 constexpr int32_t kTabSq42     = 700;   // loadout.sq42
@@ -27,27 +24,11 @@ constexpr int32_t kTabTitanLink = 800;  // titanlink.titanfall (optional bridge,
 constexpr int32_t kTabVoxel     = 810;  // voxel_bridge.voxel (optional bridge, SCO_BRIDGE_VOXEL)
 
 // Draw functions (sco_ui_draw_fn), in <feature>_ui.cpp.
-void DrawPlayerTab(void* frame, void* ctx);     // loadout_ui.cpp
-void RegisterPlayerTab(const sco_api* api, sco_plugin* self);   // loadout_ui.cpp: the Player tab, with the invoke handle below
-// The Player and Vehicles tabs' cheat toggles run the optional creative plugin's commands
-// (data/plugins/creative) through sco_api's invoke; the reply lands in the status strip, and a
-// refusal (the plugin is off, or its game.creative capability is missing) puts *flag back.
-void InvokeCreativeToggle(const char* command, bool on, bool* flag);   // loadout_ui.cpp
-void InvokeCreativeSpeed(float metresPerSecond);                      // loadout_ui.cpp
-void DrawSq42Tab(void* frame, void* ctx);       // loadout_ui.cpp
 void DrawTravelTab(void* frame, void* ctx);     // quantum_ui.cpp
-void DrawVehiclesTab(void* frame, void* ctx);   // spawn_ui.cpp
-void DrawCrewTab(void* frame, void* ctx);       // crew_ui.cpp
-void CrewTabTick(uint32_t now);                 // crew_ui.cpp: the Crew tab's seat actions (spawner.cpp's ProcessCrew)
 void DrawBuildTab(void* frame, void* ctx);      // build_ui.cpp
 void DrawMultiplayerTab(void* frame, void* ctx);   // multiplayer_ui.cpp
 void DrawTitanLinkTab(void* frame, void* ctx);  // titanlink/titanlink_ui.cpp (optional)
 void DrawVoxelTab(void* frame, void* ctx);      // voxel_bridge/voxel_ui.cpp (optional)
-
-// The NPC picker the NPCs and Crew tabs share (npc_ui.cpp): a search box and a combo over
-// npcs.txt. False while the list isn't there (a hint is shown instead). g_npcPick is the pick.
-bool NpcPicker();
-extern int g_npcPick;
 
 // sco.ui from the host, or nullptr when it doesn't publish it.
 inline const sco_ui_v1* BuiltinUi(const sco_api* api) {

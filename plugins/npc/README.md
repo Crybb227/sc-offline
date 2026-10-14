@@ -1,12 +1,20 @@
 # NPC: external owned-lifecycle SDK reference plugin
 
+Current picker/copy-list installation and the one targeted module fixture:
+[Public pickers](../../docs/pickers.md). **These sources use `sco_widgets.h` and
+`sco_content.h`, which the pinned published `sdk-v2.2.0` ships** (`sdk-v2.0.0`
+did not). The obtain/proof recipes below use that archive.
+
 Step 1C ships NPC as an **enabled external native plugin**, following inspector
 in step 1B. Release layout is `data/plugins/npc/plugin.ini` plus `npc.dll`, with
 no `disabled` marker. It requires `plugins = on`; the launcher's Plugins page can
 disable its folder for the next game start. No host linkage, built-in registration
-or hidden fallback remains. Nine built-ins plus four external features (npc,
-inspector, creative, discord) preserve 13 baseline units; two optional bridges
-are counted separately. Creative/Discord defaults and launcher behavior are unchanged.
+or hidden fallback remains. Current registry/release counts are reconciled in
+[status](../../docs/status.md): 13 baseline units plus two optional external
+bridges, not the superseded nine/four split. Creative stays off and launcher
+behavior is unchanged. Step 1D separately
+sets Discord folder metadata off and refuses presence pending privacy/transport
+approval ([review](../discord/README.md)).
 
 ## Source and published contract
 
@@ -15,9 +23,9 @@ are counted separately. Creative/Discord defaults and launcher behavior are unch
 - `plugin.ini`: `id = npc`, independent version `1.1.0`, plugin ABI `1.1`,
   native entry `npc.dll`. Commands handle optional/missing game capabilities.
 
-Build against published **`sdk-v2.0.0`**, combined **`sco-sdk-2.0.0.zip`**, after
-verifying release **`SHA256SUMS`**. SDK 2.0.0, plugin ABI 1.1 and Star Citizen game
-pack 0.3.0 are separate versions. Use only the extracted SDK's `include/`, not
+Build against published **`sdk-v2.2.0`**, combined **`sco-sdk-2.2.0.zip`**, after
+verifying release **`SHA256SUMS`**. SDK 2.2.0, plugin ABI 1.1 and Star Citizen game
+pack 0.5.0 are separate versions. Use only the extracted SDK's `include/`, not
 private host headers, the dependency's source include tree or new ImGui inputs.
 The Windows host independently builds from its tagged submodule.
 
@@ -63,10 +71,13 @@ owner-release cleanup. Process termination is not a successful unload.
 
 ## UI and native lifecycle boundary
 
-No tab or hotkey is registered. The old NPC menu tab is removed pending
-renderer-neutral widgets ([sco-core #139](https://github.com/scubamount/sco-core/issues/139));
-Crew retains its shared archetype picker. Legacy `src/npc.cpp` stays untouched;
-it is not a fallback for this plugin's commands. No new ImGui coupling is added.
+The external NPCs panel uses public `sco.widgets`: shared catalog filtering/
+paging, manual archetype, count 1–10, Spawn, Observe and owned-ticket Remove/Clear.
+Crew uses the same SDK-only parser, with independent selection/ownership state.
+No NPC hotkey was previously registered; none is invented here. Legacy
+`src/npc.cpp` stays untouched and is never a fallback. No plugin ImGui coupling
+is added. Widgets/content ship in the pinned published SDK 2.2.0 (SDK 2.0.0
+predated them); Windows rendering remains NOT VERIFIED.
 
 Normal `sco.reload npc` is a running-host external-consumer route, not provider
 hot-reload support or proven gameplay safety. Rebuild with the game closed or the

@@ -13,10 +13,59 @@ Everything the menu reads is plain text in `data/`. Most files explain their own
 | `outfits.txt` | 35 outfits: each is a `[name]` line, then one line per piece |
 | `locations.txt` | Places for the Travel tab: system, name, entity, radius |
 | `contract_scripts.txt` | The 796 contracts that run without any CIG mission script; see [features.md](features.md#contracts). |
-| `builtin/quantum/datacore/quantum_drive.toml` | The new quantum drive's game data, applied as the game loads (see [features.md](features.md#logging)) |
+| `plugins/quantum_drive/datacore/quantum_drive.toml` | The new quantum drive's game data, applied as the game loads (see [features.md](features.md#logging)) |
 | `OfflineDB/default_1.xml` | The starting loadout. The launcher copies it to `user\client\0` |
-| `plugins\discord\` | The Discord status plugin: `plugin.ini` and `discord.dll`, on by default (see [launcher.md](launcher.md#discord-status)) |
+| `plugins\discord\` | The blocked Discord status plugin: `plugin.ini`, `disabled` and `discord.dll`, off pending transport/field approval (see [launcher.md](launcher.md#discord-status)) |
 | `plugins\creative\` | The optional creative plugin: `plugin.ini`, `creative.dll` and an empty `disabled` marker (off until you switch it on in the launcher's Plugins page; see [features.md](features.md#the-creative-plugin)). Other plugins go in their own folder here with `plugins = on` |
+
+## Public picker catalog snapshots
+
+Release packaging and the CMake `picker_catalog` component install copies of
+`ships.txt` and `npcs.txt` in `data/plugins/picker_catalog/lists/`, with an ordinary
+data manifest. The external Vehicles, Crew and NPCs panels read these enabled
+startup snapshots through `sco.content`; original base files remain unchanged.
+Copy existing user-edited lists into the pack while stopped; there is no implicit
+base-file import or private-reader fallback. Restart after edits. Shared filter/
+paging and bounded ownership rules: [pickers.md](pickers.md).
+
+## Ordinary data packs and content access
+
+`data/plugins/quantum_drive/plugin.ini` declares an ordinary `kind = data`
+pack, separate from native/built-in `quantum`. It has no entry or code dependency.
+`plugins = off`, a `disabled` marker, a missing/invalid manifest or discovery
+refusal leaves that pack stock; there is no synthesized built-in pack fallback.
+Restart after installing, disabling or editing packs. The old
+`data/builtin/quantum` path is no longer consumed; user edits there must be copied
+explicitly to the new pack while stopped (back up both first). Do not load both
+legacy and G1 host CryPak producers: the host composition adapter owns early
+DataCore discovery/application once integrated.
+
+The existing sco-core pipeline discovers folders in filename byte order and
+indexes files in relative-name byte order. DataCore writes later in that order
+win a field conflict, which core logs with both owners. `atomic = true` refuses
+all operations in a broken TOML file; it is **file** atomicity, not a filesystem
+transaction. A failed final splice plan passes stock bytes through CryPak. Core
+refuses unsafe/unreadable indexed packs and propagates dependency refusal.
+Startup packs must not depend on not-yet-loaded code providers. Do not edit files
+while startup is indexing them.
+
+G14 supplies public copied list/script bytes via `sco.content` (4096 items,
+1 MiB/file, 16 MiB total). External spawn exposes `spawn.pack_list <ordinal>`
+for `lists/ships.txt` using only that table; duplicate files remain independently
+selectable. No plugin gets host paths, private ContentIndex access or script
+execution from this route. It is additive: **all seven base list files above stay
+in place**, unchanged, with no automatic import, deletion or merge. Other feature
+pack formats are not newly claimed as supported.
+
+Owner-local validation commands (not executed for this change):
+
+```sh
+sco-dcb lint data/plugins/quantum_drive
+sco-dcb check /path/to/legally-held/Game2.dcb data/plugins/quantum_drive
+```
+
+Do not upload extracted DCB/game data. These commands do not certify Windows
+CryPak timing or gameplay.
 
 ## Files the mod creates
 
@@ -67,7 +116,7 @@ When one of these files is present, `src/contracts.cpp` or `src/spawner.cpp` cha
 | `SC_OFFLINE_MULTIPLAYER` | From `multiplayer`: `off` switches the Multiplayer tab off; anything else (or unset) leaves it on |
 | `SC_OFFLINE_MULTIPLAYER_ALLOW` | From `multiplayer_allow`, checked by the launcher: extra IPv4 ranges a session may use |
 | `SC_OFFLINE_ASOP_FLEET_LIST` | From `asop_fleet_list`: `ships` lists `ships.txt` at the terminals; unset or anything else leaves the game's own list (with `asop` on) |
-| `SC_OFFLINE_MINING` | From `mining`: `on` (or `1`, `yes`, `true`) installs the natural-mining hook; unset or anything else is off. `SC_OFFLINE_MINING_DEBUG` (from `mining_debug`) the same for the `[mining/trace]` lines |
+| `SC_OFFLINE_MINING` | Legacy import-only preference; ignored by the runtime. `SC_OFFLINE_MINING_DEBUG` likewise. Explicit `--environment` import is documented in [mining](../plugins/mining/README.md). |
 | `SC_OFFLINE_ASOP` | From `asop`: `off` (or `0`, `no`, `false`) leaves the ship terminals, hangars and ATC alone; unset or anything else is on |
 | `SC_OFFLINE_SHIPS_FILE` | Where the ship list is read from |
 | `SC_OFFLINE_SPAWN_FILE` | Where the F7 position is stored |

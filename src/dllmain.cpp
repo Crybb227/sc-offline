@@ -6,18 +6,19 @@
 #include "hooks.h"
 #include "teleport.h"
 #include "spawner.h"
-#include "loadout.h"
 #include "npc.h"
 #include "build.h"
 #include "cvars.h"
 #include "missions.h"
 #include "contracts.h"
-#include "quantum.h"
 #include "travel.h"
 #include "version.h"
+#ifdef SCO_ASOP_HOST_COMPOSITION
+#include "asop_shell.h"
+#else
 #include "services.h"
 #include "fleet.h"
-#include "outfits.h"
+#endif
 #include "menu.h"
 #include "hotkeys.h"
 #include "builtins/builtins.h"
@@ -26,13 +27,14 @@
 #include "sco/log.h"
 #include "sco/scan.h"
 #include "sco/signatures.h"
-#include "sco/game/signatures.h"
-#include "sco/game/system.h"
-#include "sco/game/offline.h"
+#ifdef SCO_OFFLINE_G1_HOST
+#include "offline_host.h"
+#endif
 #include "sco/runtime.h"
 #include "sco_lua.h"
 #include "sco_lua_game.h"   // sco.datacore, sco.game.* and the game.* payloads for Lua scripts
 #include <filesystem>
+#include <cstring>
 #include <iterator>
 
 #pragma comment(lib, "shlwapi.lib")
@@ -42,120 +44,120 @@
 
 static const wchar_t* kTargetModule = L"StarCitizen.exe";
 
-static bool SelfModuleContains(const wchar_t* needle) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
-    if (snap == INVALID_HANDLE_VALUE) return false;
-    MODULEENTRY32W me{}; me.dwSize = sizeof(me);
-    bool hit = false;
-    if (Module32FirstW(snap, &me)) {
-        do {
-            if (StrStrIW(me.szModule, needle)) { hit = true; break; }
-        } while (Module32NextW(snap, &me));
+// Read-only anti-cheat inspection; no service/process/module state is modified.
+// Unknown is a refusal, including access-denied, partial enumeration and query errors.
+enum class AcCheck { Unknown, Clear, Present };
+static AcCheck InspectAntiCheat() {
+    bool unknown = false;
+    HANDLE modules = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+    if (modules == INVALID_HANDLE_VALUE) unknown = true;
+    else {
+        MODULEENTRY32W entry{}; entry.dwSize = sizeof(entry);
+        if (!Module32FirstW(modules, &entry)) unknown = true;
+        else do {
+            if (StrStrIW(entry.szModule, L"EasyAntiCheat")) { CloseHandle(modules); return AcCheck::Present; }
+        } while (Module32NextW(modules, &entry));
+        if (GetLastError() != ERROR_NO_MORE_FILES) unknown = true;
+        CloseHandle(modules);
     }
-    CloseHandle(snap);
-    return hit;
-}
-
-static bool ProcessRunningContains(const wchar_t* needle) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return false;
-    PROCESSENTRY32W pe{}; pe.dwSize = sizeof(pe);
-    bool hit = false;
-    if (Process32FirstW(snap, &pe)) {
-        do {
-            if (StrStrIW(pe.szExeFile, needle)) { hit = true; break; }
-        } while (Process32NextW(snap, &pe));
+    HANDLE processes = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (processes == INVALID_HANDLE_VALUE) unknown = true;
+    else {
+        PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
+        if (!Process32FirstW(processes, &entry)) unknown = true;
+        else do {
+            if (StrStrIW(entry.szExeFile, L"EACLauncher") || StrStrIW(entry.szExeFile, L"EasyAntiCheat") ||
+                StrStrIW(entry.szExeFile, L"start_protected_game")) {
+                CloseHandle(processes); return AcCheck::Present;
+            }
+        } while (Process32NextW(processes, &entry));
+        if (GetLastError() != ERROR_NO_MORE_FILES) unknown = true;
+        CloseHandle(processes);
     }
-    CloseHandle(snap);
-    return hit;
-}
-
-static bool ServiceRunning(const wchar_t* name) {
-    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    if (!scm) return false;
-    bool running = false;
-    if (SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_QUERY_STATUS)) {
-        SERVICE_STATUS st{};
-        if (QueryServiceStatus(svc, &st) && st.dwCurrentState != SERVICE_STOPPED)
-            running = true;
-        CloseServiceHandle(svc);
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager) unknown = true;
+    else {
+        const wchar_t* names[] = {L"EasyAntiCheat", L"EasyAntiCheat_EOS", L"EasyAntiCheatEOS"};
+        for (const wchar_t* name : names) {
+            SC_HANDLE service = OpenServiceW(manager, name, SERVICE_QUERY_STATUS);
+            if (!service) { if (GetLastError() != ERROR_SERVICE_DOES_NOT_EXIST) unknown = true; continue; }
+            SERVICE_STATUS status{};
+            const bool ok = QueryServiceStatus(service, &status) != FALSE;
+            CloseServiceHandle(service);
+            if (!ok) unknown = true;
+            else if (status.dwCurrentState != SERVICE_STOPPED) { CloseServiceHandle(manager); return AcCheck::Present; }
+        }
+        CloseServiceHandle(manager);
     }
-    CloseServiceHandle(scm);
-    return running;
+    return unknown ? AcCheck::Unknown : AcCheck::Clear;
 }
 
-static const wchar_t* AntiCheatProcess() {
-    const wchar_t* procs[] = { L"EACLauncher", L"EasyAntiCheat", L"start_protected_game" };
-    for (const wchar_t* p : procs)
-        if (ProcessRunningContains(p)) return p;
-    return nullptr;
+#ifdef SCO_OFFLINE_G1_HOST
+static sco::game::host::Admission InspectOfflineEnvironment() {
+    namespace gh = sco::game::host;
+    gh::Admission evidence;
+    const AcCheck ac = InspectAntiCheat();
+    evidence.antiCheat = ac == AcCheck::Clear ? gh::Check::Clear :
+                         ac == AcCheck::Present ? gh::Check::Present : gh::Check::Unknown;
+    wchar_t path[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (length && length < MAX_PATH)
+        evidence.targetProcess = _wcsicmp(PathFindFileNameW(path), kTargetModule) == 0 ? gh::Check::Clear : gh::Check::Present;
+    // No verified live session / effective-firewall evidence contract exists in this shell.
+    // Launcher flags, IsOnline patch success and EAC absence are NOT such evidence.
+    // Leave BOTH fields Unknown; never infer offline or blocked official access.
+    return evidence;
 }
-
-static bool AntiCheatPresent() {
-    if (SelfModuleContains(L"EasyAntiCheat")) { Log("[AC] EasyAntiCheat module is loaded in-process."); return true; }
-
-    if (const wchar_t* p = AntiCheatProcess()) { Log("[AC] anti-cheat process running: %ls", p); return true; }
-
-    const wchar_t* svcs[] = { L"EasyAntiCheat", L"EasyAntiCheat_EOS", L"EasyAntiCheatEOS" };
-    for (const wchar_t* s : svcs)
-        if (ServiceRunning(s)) { Log("[AC] anti-cheat service running: %ls", s); return true; }
-
-    return false;
-}
+#endif
 
 static bool g_offline = false;
-static bool g_outfitsOk = false;
-static bool g_buildOk = false;   // the free camera build mode uses
 static bool g_signaturesResolved = false;
 static const char* g_quitHookStatus = nullptr;   // "[app] game quit hook: ..." in LogStartup
 
-static void InstallQuitHook();
+static bool PrepareHostKit();
 
 static void StartOffline() {
     // sco-core's signature rows first. They match the game's original bytes (sco-sigcheck checks
     // them against StarCitizen.exe on disk), and the ASOP rows cover bytes that the offline patches
     // and hooks below change (the shard gate, the fleet manager's retrieve). The report goes out
     // with LogStartup.
-    if (!sco::game::RegisterGameSignatures()) Log("[!] sco-core's game signature tables did not all register");
-    sco::ResolveAll(sco::ModuleImage());
-    g_signaturesResolved = true;
+    if (!PrepareHostKit()) return; // fresh fail-closed admission BEFORE any engine mutation
+#ifdef SCO_OFFLINE_G1_HOST
+    g_signaturesResolved = sco::game::host::Status().signaturesResolved;
+#endif
     g_offline = ApplyOfflinePatches();
     if (!g_offline) return;
     InstallHooks();
-    ResolveQuantumApi(g_text, g_rdata);
-    EnableQuantumDrive();   // the pak.* rows: the new quantum drive's game data, served as it loads
-    InstallQuitHook();
     if (ResolveTeleportApi()) {
         ResolveSpawnApi(g_text, g_rdata);
-        g_outfitsOk = ResolveLoadoutApi(g_text, g_rdata);  // outfits ride the gear menu's loader
         ResolveNpcApi(g_text);
-        g_buildOk = ResolveBuildApi(g_text, g_rdata);
+        ResolveLegacyPlacementApi(g_text, g_rdata); // unrelated legacy NPC/contracts helpers only
         ResolveCVarsApi(g_text, g_rdata);
         ResolveMissionsApi(g_text, g_rdata);
         ResolveContractsApi(g_text, g_rdata);
-        ResolveFleetApi();     // ship terminals (fleet.cpp); reads sc-offline.ini's asop switch
-        ResolveHangarsApi();   // hangars and ATC tokens (services.cpp)
+#ifndef SCO_ASOP_HOST_COMPOSITION
+        ResolveFleetApi();
+        ResolveHangarsApi();
+#endif
     }
 }
 
 static void LogStartup() {
     LogOfflinePatches();
     LogHooks();
-    LogQuantum();
     if (g_signaturesResolved) sco::LogSignatureReport(false);
     if (g_quitHookStatus) Log("[app] game quit hook: %s", g_quitHookStatus);
-    if (g_tp.ok) Log("[+] teleport: ready (F7 = save spot, F8 = go there)");
-    else         Log("[!] teleport: unavailable (see above)");
+    Log("[!] teleport: G2 REFUSE; F7/F8 consumer unavailable; read services are separate");
     if (SpawnerReady()) Log("[+] ship spawner: ready (M = menu)");
     else                Log("[!] ship spawner: unavailable (see above)");
-    if (g_outfitsOk) Log("[+] outfits: ready (Squadron 42 tab, data/outfits.txt)");
-    else             Log("[!] outfits: unavailable (they use the gear menu's loader; see [gear] above)");
+#ifndef SCO_ASOP_HOST_COMPOSITION
     LogFleet();
     LogHangars();
+#endif
     if (g_offline)
         Log("[i] check Game.log: \"Process sc-client started\" line should show bOnline[0].");
     else
-        Log("[!] Game is running ONLINE.");
+        Log("[app] offline bootstrap unavailable/refused; session state is not certified");
 }
 
 // --- sco-core's host kit (sco/app.h), on the game thread -----------------------------------------
@@ -168,33 +170,59 @@ static void SetCap(const char* name, bool ready) {
 // One capability per feature, from the same readiness LogStartup prints.
 static void SetFeatureCaps() {
     SetCap("offline", g_offline);
-    SetCap("teleport", g_tp.ok);
-    SetCap("spawn.ship", SpawnerReady());
-    SetCap("crew", Menu_SeatControlAvailable());
+    SetCap("teleport", false); // G2 mutation not approved; read tables remain independently available
     SetCap("npc", SpawnerReady());
-    SetCap("outfits", g_outfitsOk);
-    SetCap("loadout", g_outfitsOk);   // the gear menu's loader, which outfits ride
-    SetCap("quantum.drive", QuantumDriveReady());
-    SetCap("quantum.boost", QuantumBoostReady());
-    SetCap("quantum", g_tp.ok);   // the Travel tab's requests all go through teleport
-    SetCap("build", g_buildOk && SpawnerReady());
+    SetCap("quantum", false); // movement remains REFUSE; external read commands have their own availability
     SetCap("contracts", ContractsReady());
-    SetMiningCaps();   // game.mining, from sco-core's mining.cell row
-#ifdef SCO_BRIDGE_TITANLINK
-    SetCap("titanlink", g_tp.ok);   // your pose and zone conversions come from teleport.spatial
+#ifndef SCO_ASOP_HOST_COMPOSITION
+    SetFleetCaps();
+    SetHangarCaps();
 #endif
-#ifdef SCO_BRIDGE_VOXEL
-    SetCap("voxel_bridge", g_tp.ok && SpawnerReady());   // teleport.spatial, plus the spawner for crates
-#endif
-    SetFleetCaps();    // asop.terminal, asop.deliver, asop.retrieve, hangar.lift, atc.store, ...
-    SetHangarCaps();   // hangar.instance, atc.tokens, asop.diagnostics
 }
 
 static const sco::plugins::ScriptRuntime kLua{ sco_lua_load, sco_lua_unload };
 
 static bool g_hostKitStarted = false;   // sco::app::Start ran (on the game thread)
 
-static void StartHostKit() {
+#ifdef SCO_OFFLINE_G13_HOST
+static void ConfigurePrivateSession(sco::app::Platform& pf) {
+    // The host (never a plugin) owns bind/scope. No legacy CIDR expansion.
+    // G1 supplies positive live admission; do not substitute g_offline or flags.
+    char enabled[16]{};
+    const DWORD on = GetEnvironmentVariableA("SC_OFFLINE_MULTIPLAYER", enabled, sizeof(enabled));
+    if (on >= sizeof(enabled)) { pf.privateSession.enabled = false; return; }
+    pf.privateSession.enabled = !(on && _stricmp(enabled, "off") == 0);
+    char bind[32]{}, peers[272]{};
+    const DWORD bn = GetEnvironmentVariableA("SC_OFFLINE_MULTIPLAYER_BIND", bind, sizeof(bind));
+    const DWORD pn = GetEnvironmentVariableA("SC_OFFLINE_MULTIPLAYER_PEERS", peers, sizeof(peers));
+    if ((!bn || (bn < sizeof(bind) && !std::strcmp(bind, "127.0.0.1"))) && !pn) return; // exact loopback only
+    if (!bn || !pn || bn >= sizeof(bind) || pn >= sizeof(peers)) {
+        pf.privateSession.enabled = false;
+        Log("[G13] invalid/incomplete host bind + exact peer configuration; disabled");
+        return;
+    }
+    pf.privateSession.bindAddress = bind;
+    pf.privateSession.allowedAddresses.clear();
+    std::string value(peers);
+    size_t first = 0;
+    while (first < value.size() && pf.privateSession.allowedAddresses.size() < 16) {
+        const size_t end = value.find(',', first);
+        std::string address = value.substr(first, end == std::string::npos ? end : end-first);
+        const size_t begin = address.find_first_not_of(" ");
+        const size_t last = address.find_last_not_of(" ");
+        if (begin == std::string::npos) { pf.privateSession.enabled = false; return; }
+        pf.privateSession.allowedAddresses.push_back(address.substr(begin,last-begin+1));
+        if (end == std::string::npos) { first = value.size(); break; }
+        first = end+1;
+        if (first == value.size()) { pf.privateSession.enabled = false; return; }
+    }
+    if (first < value.size()) pf.privateSession.enabled = false;
+    // sco-core Configure validates private numeric bind/exact addresses and fails
+    // closed on public/wildcard/DNS/CIDR/duplicate/mismatched LAN input.
+}
+#endif
+
+static bool PrepareHostKit() {
     sco::app::Platform pf;
     pf.hostVersion = SCO_TITLE;
     char dir[MAX_PATH];
@@ -218,8 +246,8 @@ static void StartHostKit() {
     // folder and with plugins on or off. Their capabilities still come from SetFeatureCaps.
     pf.builtins = kBuiltins;
     pf.nBuiltins = std::size(kBuiltins);
-    // image stays nullptr: the features resolve their addresses in DllMain (StartOffline), before
-    // this thread exists, so the signature rows were resolved there and reported by LogStartup.
+    // G1 owns original-image signature resolution in the worker's Prepare, outside
+    // loader lock. The Platform image/registerSignatures inputs must remain null.
     pf.setCapabilities = SetFeatureCaps;
     // The keys sc-offline handles itself (hotkeys.h); no plugin can bind them. The built-ins bind
     // F6, F7 and F8 to their commands through sco.ui like any plugin.
@@ -228,131 +256,118 @@ static void StartHostKit() {
     // sco-core's game pack publishes teleport.spatial (and, later, the game.* services) under the
     // owner "game" before the built-ins load; the teleport built-in no longer provides it.
     pf.gameServices = true;
-    g_hostKitStarted = sco::app::Start(pf);
+#ifdef SCO_OFFLINE_G13_HOST
+    ConfigurePrivateSession(pf);
+#endif
+    // G1 owns early manifest discovery, OPEN/LOADED timing and producer drain.
+    // Its current source contract refuses mixed builtin + early DataCore input;
+    // do not disable DataCore or resurrect the old private pack loader to bypass it.
+    pf.dataCore = true;
+#ifdef SCO_OFFLINE_G1_HOST
+    static const sco::Image original = sco::ModuleImage();
+    sco::game::host::Options options;
+    options.inspect = InspectOfflineEnvironment;
+    options.image = &original;
+    options.platform = std::move(pf);
+    if (options.platform.nBuiltins)
+        Log("[app] G1 early DataCore requires external folders; retained builtin inputs refuse (migration pending)");
+    const sco::Result result = offline_host::Prepare(std::move(options));
+    g_quitHookStatus = sco::game::host::Status().quitHookInstalled ? "installed by game pack" : "unavailable";
+    if (result != sco::Result::Ok) Log("[app] offline admission/prepare refused: %s", sco::ResultName(result));
+    return result == sco::Result::Ok;
+#else
+    Log("[app] offline startup unavailable: published host pin lacks G1; no private fallback");
+    return false;
+#endif
 }
 
-// game.exit and unload, once, on the game thread. Two triggers, whichever comes first: the game's
-// own CSystem::Quit when it is about to end the process (QuitDetour), and WM_QUIT reaching the
-// game's message loop (GetMsgProc). `trigger` names the one that fired.
 static void StopHostKit(const char* trigger) {
-    static bool stopped = false;
-    if (stopped) return;
-    stopped = true;
-    Log("[app] game closing (%s): game.exit, unloading plugins", trigger);
-    sco::app::Stop();
+#ifdef SCO_ASOP_HOST_COMPOSITION
+    offline::asop::Stop(); // Untaken callers wake before app/provider teardown.
+#endif
+#ifdef SCO_OFFLINE_G1_HOST
+    const sco::Result result = offline_host::Stop();
+    if (result != sco::Result::Ok) Log("[app] stop (%s) refused: %s", trigger, sco::ResultName(result));
+#else
+    (void)trigger;
+#endif
 }
 
-// --- the game's own Quit (sco-core's system.quit row) --------------------------------------------
-//
-// void CSystem::Quit(SDisconnectionInfo&& info, const int exitCode): rcx = CSystem*, rdx = info,
-// r8d = exitCode. No stack or xmm arguments. Every call quits; it ends in one of two ways:
-//   - fast shutdown, when the ExitOnQuit cvar (an ICVar* in CSystem, GetIVal != 0) or test mode
-//     (a bool in CSystem) is set: "System Fast Shutdown (%s enabled)", then
-//     TerminateProcess(GetCurrentProcess(), exitCode) inside the call. No WM_QUIT ever comes.
-//     This is the menu Quit in LIVE.
-//   - otherwise PostQuitMessage(exitCode) and a normal return; WM_QUIT then reaches GetMsgProc.
-// The detour stops the host kit before the original only on the first path, testing the same two
-// fields the original tests (their offsets read from its own instructions at +0x31a / +0x330),
-// and leaves the second to the WM_QUIT trigger.
-using QuitFn = void(__fastcall*)(void* system, void* info, int exitCode);
-static QuitFn  g_quitOriginal = nullptr;
-static int32_t g_quitCVarOffset = 0;      // ICVar* ExitOnQuit, in CSystem
-static int32_t g_quitTestModeOffset = 0;  // bool test mode, in CSystem
-
-// The original's test, step for step: cvar && cvar->GetIVal() (vtable +0x10), else test mode.
-static bool QuitEndsProcess(void* system) {
-    auto* sys = static_cast<uint8_t*>(system);
-    void* cvar = *reinterpret_cast<void**>(sys + g_quitCVarOffset);
-    if (cvar) {
-        using GetIValFn = int(__fastcall*)(void* cvar);
-        if ((*reinterpret_cast<GetIValFn* const*>(cvar))[sco::game::offline::kCVarGetIValSlot / sizeof(void*)](cvar) != 0) return true;
-    }
-    return sys[g_quitTestModeOffset] != 0;
+#ifdef SCO_ASOP_HOST_COMPOSITION
+static const char kAsopExitOwner = 0;
+static void StopAsopBeforeProviders(const char*, const void*, void*) {
+    offline::asop::Stop();
 }
+#endif
 
-static void __fastcall QuitDetour(void* system, void* info, int exitCode) {
-    if (sco::OnGameThread() && g_hostKitStarted && QuitEndsProcess(system)) StopHostKit("CSystem::Quit");
-    g_quitOriginal(system, info, exitCode);
-}
-
-// After ResolveAll. Hooks CSystem::Quit when system.quit is OK and its fast-shutdown test is where
-// this build has it; otherwise WM_QUIT stays the only trigger.
-static void InstallQuitHook() {
-    sco::game::QuitHook q;
-    if (!sco::game::QuitFunction(q)) {
-        g_quitHookStatus = "not installed (system.quit isn't OK, see [core] signatures; WM_QUIT only)";
-        return;
-    }
-    // system.quit_fast_shutdown (system.quit +0x31a) checks the test:
-    // +0x31a  mov rcx,[r14+cvar]; test rcx,rcx; je; mov rax,[rcx]; call [rax+10h]; test eax,eax; jne
-    // +0x330  cmp byte ptr [r14+testMode],0; je (PostQuitMessage)
-    if (!OfflineCapReady("system.quit_hook")) {
-        g_quitHookStatus = "not installed (CSystem::Quit's fast-shutdown test moved: system.quit_fast_shutdown isn't OK, see [core] signatures; WM_QUIT only)";
-        return;
-    }
-    const uint8_t* test = sco::Sig("system.quit_fast_shutdown");
-    g_quitCVarOffset     = *reinterpret_cast<const int32_t*>(test + sco::game::offline::kQuitCVarDisp);
-    g_quitTestModeOffset = *reinterpret_cast<const int32_t*>(test + sco::game::offline::kQuitTestModeDisp);
-    if (!HookFunction(q.fn, q.stolenBytes, reinterpret_cast<void*>(&QuitDetour), reinterpret_cast<void**>(&g_quitOriginal))) {
-        g_quitHookStatus = "not installed (hook failed; WM_QUIT only)";
-        return;
-    }
-    g_quitHookStatus = "installed";
-}
-
-static void RunFeatureTicks(DWORD now) {
-    // Each built-in runs its feature's work from its tick subscription; these calls are the
-    // fallback for a built-in that didn't load.
-    if (!SpawnBuiltinOwnsTick()) ProcessShipMenu(now);
-    if (!CrewBuiltinOwnsTick()) ProcessCrew(now);
-    if (!LoadoutBuiltinOwnsTick()) { ProcessLoadout(); ProcessOutfits(); }
-    ProcessNpcs();   // legacy npcs.txt/removal callers remain; external NPC uses game.actors with no tick
-    if (!BuildBuiltinOwnsTick()) ProcessBuild();
-    ProcessCVars();
-    if (!QuantumBuiltinOwnsTick()) { ProcessQuantum(); ProcessTravel(now); }
-    ProcessMissions();
-    if (!ContractsBuiltinOwnsTick()) {
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            Log("[contracts] built-in unavailable: actor-death events aren't subscribed; fallback retires hostiles by entity presence only");
+static void StartHostKit() {
+#ifdef SCO_OFFLINE_G1_HOST
+    const sco::Result result = offline_host::Start();
+    g_hostKitStarted = result == sco::Result::Ok;
+    if (!g_hostKitStarted) Log("[app] start refused: %s", sco::ResultName(result));
+#ifdef SCO_ASOP_HOST_COMPOSITION
+    if (g_hostKitStarted) {
+        // G1 owns engine quit and admission-loss teardown. Its app::Stop dispatches
+        // game.exit before withdrawing providers, including the direct quit path.
+        const auto subscribed = sco::Subscribe(&kAsopExitOwner, "game.exit", StopAsopBeforeProviders, nullptr);
+        if (subscribed != sco::Result::Ok) {
+            Log("[asop] shutdown subscription refused: %s; ASOP stays inactive", sco::ResultName(subscribed));
+        } else {
+            char ships[MAX_PATH]{};
+            ShipsFilePath(ships, sizeof(ships));
+            const auto r = offline::asop::StartFromEnvironment(g_offline, InspectAntiCheat() == AcCheck::Clear, ships);
+            Log("[asop] host composition result=%u; no product fallback", static_cast<unsigned>(r));
         }
-        ProcessContracts();
     }
-    TeleportTick(now);
+#endif
+#endif
+}
+
+// Retained legacy consumers pending their own game-pack migrations. Never
+// revive failed/disabled external features or built-in subscription work here.
+static void RunLegacyTicks(DWORD now) {
+    ProcessNpcs(); // unrelated legacy callers; external NPC owns its public requests
+    ProcessCVars();
+    ProcessMissions();
+    // Build, quantum, teleport and loadout are external; no fallback ticks.
+#ifndef SCO_ASOP_HOST_COMPOSITION
     ProcessFleet(now);
+#endif
 }
 
 static void OnMainThreadTick() {
-    static bool hostKitStarted = false;
-    if (!hostKitStarted) { hostKitStarted = true; StartHostKit(); }
-    // Every message, not throttled: a loading thread may be waiting for it (services.cpp, rc7).
-    ProcessHangars(GetTickCount());
-    // Every pass, not throttled: the menu's frame (its tabs are plugin draws, game thread only)
-    // and the keys bound through sco.ui.
-    Menu_GameThreadFrame();
-    if (g_hostKitStarted) Hotkeys_Poll();
-
-    static DWORD last = 0;
+#ifdef SCO_OFFLINE_G1_HOST
+    // Terminal phases never restart; Start() re-inspects before provider publication.
+    if (sco::game::host::Status().phase == sco::game::host::Phase::Prepared) StartHostKit();
+    if (!offline_host::Running()) return;
     const DWORD now = GetTickCount();
+    // Re-inspect BEFORE cadence, OS callbacks or retained legacy consumers. Lost
+    // admission cancels pending app tasks through G1 without executing them.
+    if (offline_host::Tick(now) != sco::Result::Ok || !offline_host::Running()) return;
+#ifdef SCO_ASOP_HOST_COMPOSITION
+    offline::asop::Pump(now); // EVERY admitted message, never behind tick cadence.
+#else
+    ProcessHangars(now); // synchronous message handoff remains unthrottled
+#endif
+    Menu_GameThreadFrame();
+    Hotkeys_Poll();
+    static DWORD last = 0;
     if (now - last < 100) return;
     last = now;
-
-    // Every feature below reads teleport's entity system, and none of them ran before this hook
-    // started without teleport; the host kit's Tick runs either way.
-    if (g_tp.ok) RunFeatureTicks(now);
-    sco::app::Tick(now);   // plugin tasks, then "tick"
+    if (g_tp.ok) RunLegacyTicks(now);
+#endif
 }
 
 static HHOOK g_msgHook = nullptr;
 
 static LRESULT CALLBACK GetMsgProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
-        OnMainThreadTick();
-        // GetMessage hands the game's main loop WM_QUIT when the game closes: the last point we
-        // reliably see on the game thread. Peeks that leave it queued don't count; a PeekMessage
-        // that removes it may add PM_NOYIELD, so test the PM_REMOVE bit.
-        if ((wp & PM_REMOVE) && reinterpret_cast<const MSG*>(lp)->message == WM_QUIT) StopHostKit("WM_QUIT");
+        // WM_QUIT is terminal BEFORE queued work/render/input; a non-removing peek
+        // also must not execute a tick while quit is pending. Game-pack quit owns the
+        // synchronous pre-engine teardown; this is only the secondary OS trigger.
+        if (reinterpret_cast<const MSG*>(lp)->message == WM_QUIT) {
+            if (wp & PM_REMOVE) StopHostKit("WM_QUIT");
+        } else OnMainThreadTick();
     }
     return CallNextHookEx(g_msgHook, code, wp, lp);
 }
@@ -380,7 +395,15 @@ static void RunMainThreadService() {
     g_msgHook = SetWindowsHookExW(WH_GETMESSAGE, GetMsgProc, nullptr, GetWindowThreadProcessId(hwnd, nullptr));
     if (!g_msgHook) { Log("[app] could not hook the game's message loop (%lu); hotkeys, menu and plugins disabled", GetLastError()); return; }
     if (SpawnerReady()) Menu_Start(hwnd);
-    for (;;) { PostMessageW(hwnd, WM_NULL, 0, 0); Sleep(200); }
+#ifdef SCO_OFFLINE_G1_HOST
+    for (;;) {
+        const auto phase = sco::game::host::Status().phase;
+        if (phase == sco::game::host::Phase::Stopped || phase == sco::game::host::Phase::Failed) break;
+        PostMessageW(hwnd, WM_NULL, 0, 0);
+        Sleep(200);
+    }
+    UnhookWindowsHookEx(g_msgHook); // hook handle stays immutable for any in-flight callback
+#endif
 }
 
 static DWORD WINAPI ModThread(LPVOID param) {
@@ -393,8 +416,8 @@ static DWORD WINAPI ModThread(LPVOID param) {
     if (!game) game = GetModuleHandleW(nullptr);
     Log("[+] game module base: 0x%p", reinterpret_cast<void*>(game));
 
-    if (AntiCheatPresent()) {
-        Log("[!] ANTI-CHEAT DETECTED. This mod is OFFLINE-ONLY and will not run here.");
+    if (InspectAntiCheat() != AcCheck::Clear) {
+        Log("[AC] anti-cheat present or inspection unknown; offline admission refused");
         if (g_hooksInstalled) {
             Log("[!] Hooks are already installed, so staying loaded (idle). Close the game.");
             for (;;) Sleep(1000);
@@ -403,14 +426,15 @@ static DWORD WINAPI ModThread(LPVOID param) {
         Sleep(5000);
         FreeLibraryAndExitThread(self, 0);
     }
-    Log("[+] No anti-cheat present. Safe to proceed (offline instance confirmed).");
+    Log("[app] anti-cheat inspection clear; offline/network admission still required");
     if (ProcessElevated())
         Log("[!] the game is running as administrator. Windows then ignores the switches the game uses to turn off "
             "overlay Vulkan layers (OBS, Steam), and one of those can crash the game while it loads. Start sc-offline.exe "
             "normally, not \"Run as administrator\", and untick \"Run this program as an administrator\" on StarCitizen.exe.");
 
-    LogStartup();
     ReadStartOptions();
+    StartOffline();
+    LogStartup();
     RunMainThreadService();
 
     for (;;) Sleep(1000);
@@ -424,7 +448,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hModule);
         InitLog();
         sco::SetLogSink(ForwardCoreLog);
-        if (!AntiCheatProcess()) StartOffline();
         CreateThread(nullptr, 0, ModThread, hModule, 0, nullptr);
     }
     return TRUE;

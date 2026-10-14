@@ -8,31 +8,12 @@
 #include <cstdint>
 #include <cstring>
 
-extern const sco::plugins::Builtin kTeleportBuiltin;   // teleport_plugin.cpp: teleport.save, teleport.go
-extern const sco::plugins::Builtin kSpawnBuiltin;      // spawn_plugin.cpp: spawn.ship, spawn.entities, the spawner tick
-extern const sco::plugins::Builtin kCrewBuiltin;       // crew_plugin.cpp: crew.*, seat actions and crew jobs
-extern const sco::plugins::Builtin kLoadoutBuiltin;    // loadout_plugin.cpp: loadout.equip, loadout.wear, gear + outfit ticks
-extern const sco::plugins::Builtin kQuantumBuiltin;    // quantum_plugin.cpp: quantum.*, the quantum boost and travel ticks
-extern const sco::plugins::Builtin kBuildBuiltin;      // build_plugin.cpp: build.*, the build-mode tick (F6)
 extern const sco::plugins::Builtin kContractsBuiltin;  // contracts_plugin.cpp: contracts.status, the contracts tick
-extern const sco::plugins::Builtin kMiningBuiltin;      // mining_plugin.cpp: mining.status, natural mining on the game.mining row (mining = on)
-extern const sco::plugins::Builtin kMultiplayerBuiltin;  // multiplayer_plugin.cpp: multiplayer.*, co-presence over sco.net
-// The optional bridges (docs/bridges.md), compiled in only with their CMake option; never in a release.
-extern const sco::plugins::Builtin kTitanLinkBuiltin;  // titanlink/titanlink_plugin.cpp: titanlink.*, the Titanfall 2 link (SCO_BRIDGE_TITANLINK)
-extern const sco::plugins::Builtin kVoxelBuiltin;      // voxel_bridge/voxel_plugin.cpp: voxel_bridge.*, the voxel-game link (SCO_BRIDGE_VOXEL)
+// Multiplayer uses the approved G13 broker as an external module, never this registry.
+// Bridges remain independent disabled external modules.
 
-// True while the spawn built-in is loaded (or crashed): its tick subscription runs ProcessShipMenu,
-// so dllmain doesn't. False when it never loaded, and dllmain runs the spawner tick itself.
-bool SpawnBuiltinOwnsTick();
-// The same for the built-ins after it: true while that built-in's tick subscription runs its
-// feature's per-tick work, so RunFeatureTicks (dllmain.cpp) runs it only as the fallback.
-bool CrewBuiltinOwnsTick();
-bool LoadoutBuiltinOwnsTick();
-bool QuantumBuiltinOwnsTick();
-bool BuildBuiltinOwnsTick();
+// Remaining built-ins own their ticks; external features never have a host fallback.
 bool ContractsBuiltinOwnsTick();
-// game.mining from sco-core's rows: ready when the cell function is found (SetFeatureCaps).
-void SetMiningCaps();
 
 // The index of the entry named `name` (any case) in a list of count names, or -1.
 inline int FindBuiltinName(int count, const char* (*nameAt)(int), const char* name) {
@@ -68,13 +49,5 @@ inline sco_result RegisterBuiltinCommand(const sco_api* api, sco_plugin* self, c
 }
 
 // Every built-in, in load order.
-inline const sco::plugins::Builtin kBuiltins[] = { kTeleportBuiltin, kSpawnBuiltin, kCrewBuiltin, kLoadoutBuiltin,
-    kQuantumBuiltin, kBuildBuiltin, kContractsBuiltin, kMiningBuiltin,
-    kMultiplayerBuiltin
-#ifdef SCO_BRIDGE_TITANLINK
-    , kTitanLinkBuiltin
-#endif
-#ifdef SCO_BRIDGE_VOXEL
-    , kVoxelBuiltin
-#endif
+inline const sco::plugins::Builtin kBuiltins[] = { kContractsBuiltin
 };

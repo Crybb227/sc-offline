@@ -1,22 +1,40 @@
 # Published-SDK inspector and owned NPC workflows
 
+For distinct author-owned IDs rather than replacing release features, use the
+[copyable SDK/MCP tutorial](../examples/sdk-mcp/README.md). It supplies
+`tutorial_npc` and `tutorial_inspector` copies and keeps static discovery separate
+from optional default-off runtime MCP. The tutorial revision is compile-only;
+checker/dynamic/MCP/negative tests are NOT RUN.
+
+The newer [loadout/SQ42 consumer](../plugins/loadout/README.md) uses G6 typed
+equip, G7 **read-only** cvars, public copied content and optional widgets. Their
+headers ship in the pinned published SDK 2.2.0 (SDK 2.0.0 lacked them). Its build
+is separate from the published tutorial below; release staging is pending.
+No loadout built-in or legacy host fallback remains; quantum control is deferred.
+
+The already external, shipped-off creative plugin has its own
+[published-SDK build/check/install and settings/lifecycle guide](../plugins/creative/README.md).
+Its focused `creative-module-workflow` tests the actual module; reversible cleanup
+uses a synthetic provider release-hook stand-in, not Windows/game certification.
+
 Steps 1B/1C ship inspector and NPC as enabled external native plugins under
 `data/plugins/{inspector,npc}/`, not production built-ins. No host linkage,
-registration or fallback remains for either. Nine built-ins and four external
-features (npc, inspector, creative, discord) preserve 13 baseline feature units;
+registration or fallback remains for either. Seven built-ins and six external
+features (npc, inspector, crew, spawn, creative, discord) preserve 13 baseline feature units;
 two optional bridges are separate. Neither `plugins = off` nor a disabled feature
-folder resurrects a hidden implementation. Creative/Discord defaults and launcher
-behavior are unchanged.
+folder resurrects a hidden implementation. Creative stays off and launcher behavior is unchanged. Step 1D separately
+sets Discord folder metadata off and refuses presence pending privacy/transport
+approval; see [Discord review and proof](../plugins/discord/README.md).
 
 The external modules use their feature sources and public SDK headers only, not
 private host registration, product version, host include trees or new ImGui inputs.
-The old NPC tab is removed pending renderer-neutral widgets ([sco-core #139](https://github.com/scubamount/sco-core/issues/139)); Crew keeps its shared picker and legacy
-`src/npc.cpp` is untouched. `src/workflow_adapters.cpp` is removed.
+The old NPC tab is removed pending renderer-neutral widgets ([sco-core #139](https://github.com/scubamount/sco-core/issues/139)); Crew and ordinary spawn are also external command-first consumers; their
+legacy product picker tabs are removed. Legacy `src/npc.cpp` is untouched. `src/workflow_adapters.cpp` is removed.
 
-Use published **`sdk-v2.0.0`**, combined **`sco-sdk-2.0.0.zip`**, verified against
-release **`SHA256SUMS`**: SDK 2.0.0, plugin ABI 1.1 and Star Citizen game pack 0.3.0
+Use published **`sdk-v2.2.0`**, combined **`sco-sdk-2.2.0.zip`**, verified against
+release **`SHA256SUMS`**: SDK 2.2.0, plugin ABI 1.1 and Star Citizen game pack 0.5.0
 are distinct versions. The Windows host independently uses the tagged submodule
-`cd9a686bda4184f1befbdf0b74b503a1565540dd`; a plugin archive cannot build the full host.
+`686187ce936400450d448f1fe754b1e58263e4af`; a plugin archive cannot build the full host.
 
 Standalone modules/manifests stage under `<plugin-build>/test-plugins/{npc,inspector}/`.
 Windows emits `npc.dll` and `inspector.dll`; macOS/Linux emit development-only
@@ -45,26 +63,26 @@ uses its tagged submodule independently.
 
 ### Stage 1 — Obtain and verify the published SDK
 
-Download **`sco-sdk-2.0.0.zip`** (the combined legacy core+Star Citizen SDK) and
+Download **`sco-sdk-2.2.0.zip`** (the combined legacy core+Star Citizen SDK) and
 **`SHA256SUMS`** from the immutable
-[`sdk-v2.0.0` release](https://github.com/scubamount/sco-core/releases/tag/sdk-v2.0.0).
+[`sdk-v2.2.0` release](https://github.com/scubamount/sco-core/releases/tag/sdk-v2.2.0).
 Use an empty work directory. In Developer PowerShell for Visual Studio:
 
 ```powershell
 $Work = Join-Path $PWD "inspector-dev"
 New-Item -ItemType Directory -Path $Work -ErrorAction Stop | Out-Null
 Set-Location $Work
-$Release = "https://github.com/scubamount/sco-core/releases/download/sdk-v2.0.0"
-Invoke-WebRequest "$Release/sco-sdk-2.0.0.zip" -OutFile "sco-sdk-2.0.0.zip"
+$Release = "https://github.com/scubamount/sco-core/releases/download/sdk-v2.2.0"
+Invoke-WebRequest "$Release/sco-sdk-2.2.0.zip" -OutFile "sco-sdk-2.2.0.zip"
 Invoke-WebRequest "$Release/SHA256SUMS" -OutFile "SHA256SUMS"
-python -c "import hashlib,pathlib; p=pathlib.Path('sco-sdk-2.0.0.zip'); rows=[l.split() for l in pathlib.Path('SHA256SUMS').read_text().splitlines() if l.strip()]; hashes=[r[0] for r in rows if r[1].lstrip('*')==p.name]; assert len(hashes)==1 and hashlib.sha256(p.read_bytes()).hexdigest()==hashes[0], 'SDK archive checksum mismatch'"
+python -c "import hashlib,pathlib; p=pathlib.Path('sco-sdk-2.2.0.zip'); rows=[l.split() for l in pathlib.Path('SHA256SUMS').read_text().splitlines() if l.strip()]; hashes=[r[0] for r in rows if r[1].lstrip('*')==p.name]; assert len(hashes)==1 and hashlib.sha256(p.read_bytes()).hexdigest()==hashes[0], 'SDK archive checksum mismatch'"
 if ($LASTEXITCODE -ne 0) { throw "Do not extract an unverified SDK" }
-python -m zipfile -e sco-sdk-2.0.0.zip sdk
-$SDK = Join-Path $Work "sdk/sco-sdk-2.0.0"
+python -m zipfile -e sco-sdk-2.2.0.zip sdk
+$SDK = Join-Path $Work "sdk/sco-sdk-2.2.0"
 ```
 
-Check the archive's `VERSIONS.txt` and `COMPATIBILITY.json`: SDK 2.0.0,
-plugin ABI 1.1, game pack 0.3.0. The archive root is `sco-sdk-2.0.0/`, with
+Check the archive's `VERSIONS.txt` and `COMPATIBILITY.json`: SDK 2.2.0,
+plugin ABI 1.1, game pack 0.5.0. The archive root is `sco-sdk-2.2.0/`, with
 `include/`, `CMakeLists.txt` and `tools/sco-plugin-check.c`. Hash verification
 identifies the downloaded artifact; it is not a gameplay or trust guarantee.
 Do **not** replace `include/` with `external/sco-core/include` or locally
@@ -157,7 +175,7 @@ replace that run; releases remain human decisions.
 ### Stage 1 — Obtain and verify
 
 Follow inspector Stage 1 above in a fresh `npc-dev` work directory. Download the
-same immutable `sdk-v2.0.0` combined `sco-sdk-2.0.0.zip` and release `SHA256SUMS`,
+same immutable `sdk-v2.2.0` combined `sco-sdk-2.2.0.zip` and release `SHA256SUMS`,
 verify the archive **before extraction**, and use only the extracted SDK `include/`.
 CMake 3.20+, Python 3 and C/C++20 are required; the game module requires Windows
 x64/MSVC. `plugins/npc/{npc.cpp,npc.h,external.cpp,plugin.ini}` are the copyable

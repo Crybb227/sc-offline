@@ -27,6 +27,7 @@ def main(args):
     source = work / 'source'
     (source / 'plugins').mkdir(parents=True)
     shutil.copy2(ROOT / 'plugins/CMakeLists.txt', source / 'plugins/CMakeLists.txt')
+    shutil.copy2(ROOT / 'plugins/picker.h', source / 'plugins/picker.h')
     for feature in ('npc', 'inspector'):
         shutil.copytree(ROOT / 'plugins' / feature, source / 'plugins' / feature)
     (source / 'tools').mkdir()
@@ -35,6 +36,7 @@ def main(args):
     build = work / 'plugin-build'
     configure = ['cmake', '-S', source / 'plugins', '-B', build,
                  '-DSCO_SDK_INCLUDE_DIR=' + str(sdk / 'include'), '-DSCO_WORKFLOW_TESTS=ON',
+                 '-DSCO_ADDITIONAL_FEATURES=OFF',
                  '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', '-DSCO_NPC_DEPENDENCY_TRACE=ON']
     configure += (['-G', 'Visual Studio 18 2026', '-A', 'x64'] if os.name == 'nt'
                   else ['-G', 'Unix Makefiles'])

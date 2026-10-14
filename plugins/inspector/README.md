@@ -6,7 +6,9 @@ built-in. Release layout is `data/plugins/inspector/plugin.ini` plus
 launcher's Plugins page can switch its folder off. There is no host fallback.
 Step 1C also ships NPC as an enabled external command-first plugin. Nine built-ins
 remain and four features are external (npc, inspector, creative, discord);
-creative and Discord defaults are unchanged. See [NPC](../npc/README.md).
+creative stays off. Step 1D separately sets Discord folder metadata off and
+refuses presence pending privacy/transport approval ([review](../discord/README.md)).
+See [NPC](../npc/README.md).
 
 ## Source and contract
 
@@ -18,9 +20,9 @@ creative and Discord defaults are unchanged. See [NPC](../npc/README.md).
 - `inspector.lua` / `lua-plugin.ini`: non-default restricted read-only alternative.
 - `inspector_test.lua`: synthetic sandbox fixture, not bundled-runtime/game proof.
 
-Build from published **`sdk-v2.0.0`**, combined **`sco-sdk-2.0.0.zip`**, after
-checking the release **`SHA256SUMS`**. SDK 2.0.0, frozen plugin ABI 1.1 and Star
-Citizen game pack 0.3.0 are distinct versions. Use the extracted SDK `include/`,
+Build from published **`sdk-v2.2.0`**, combined **`sco-sdk-2.2.0.zip`**, after
+checking the release **`SHA256SUMS`**. SDK 2.2.0, frozen plugin ABI 1.1 and Star
+Citizen game pack 0.5.0 are distinct versions. Use the extracted SDK `include/`,
 never private host headers, the source dependency include tree or new ImGui inputs.
 The host itself uses the tagged sco-core submodule, not this plugin archive.
 
