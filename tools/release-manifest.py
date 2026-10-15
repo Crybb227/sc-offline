@@ -35,7 +35,7 @@ import sys
 
 NAME = "manifest.json"
 FORMAT = 1
-TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$")
+TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.]+)?)$")
 
 
 def bad_path(rel):
@@ -96,7 +96,7 @@ def render(version, tag, commit, entries):
 def write(folder, tag, commit, version_file):
     m = TAG_RE.match(tag)
     if not m:
-        raise ValueError(f"tag {tag!r} isn't v<major>.<minor>.<patch>[-pre]")
+        raise ValueError(f"tag {tag!r} isn't v<major>.<minor>.<patch>[.<build>][-pre]")
     version = m.group(1)
     if version_file:
         have = version_h(version_file)

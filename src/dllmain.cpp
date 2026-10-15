@@ -27,8 +27,12 @@
 #include "sco/log.h"
 #include "sco/scan.h"
 #include "sco/signatures.h"
+#include "sco/hook.h"
 #ifdef SCO_OFFLINE_G1_HOST
 #include "offline_host.h"
+#include "admission_probe.h"
+#include <mutex>
+#include <cstdio>
 #endif
 #include "sco/runtime.h"
 #include "sco_lua.h"
@@ -43,6 +47,62 @@
 #pragma comment(linker, "/export:DirectInput8Create=C:\\Windows\\System32\\dinput8.DirectInput8Create,@1")
 
 static const wchar_t* kTargetModule = L"StarCitizen.exe";
+
+// Startup gate. The offline patches must land before the game's own startup reaches its EAC
+// handshake (an unpatched game exits a fraction of a second after it starts). G1's Prepare may not
+// run under the loader lock, so it runs on ModThread; the game's main thread is held at the exe's
+// entry point until ModThread has finished StartOffline (admitted or refused), or kGateTimeoutMs.
+// The entry starts with a call rel32, which InstallDetour can't relocate, so the gate writes its own
+// 12-byte absolute jump and puts the original bytes back before the entry runs. Only the main thread
+// exists at the entry, so the restore can't race another thread.
+static HANDLE g_startupDone = nullptr;
+static uint8_t* g_entry = nullptr;
+static uint8_t g_entrySaved[12];
+static constexpr DWORD kGateTimeoutMs = 60000;
+
+static void ReleaseStartupGate() {
+    if (g_startupDone) SetEvent(g_startupDone);
+}
+
+extern "C" void StartupGateWait() {
+    const DWORD waited = WaitForSingleObject(g_startupDone, kGateTimeoutMs);
+    if (!sco::hook::WriteCode(g_entry, g_entrySaved, sizeof(g_entrySaved)))
+        TerminateProcess(GetCurrentProcess(), 0xC0DE0001);   // the entry would run our jump forever
+    if (waited != WAIT_OBJECT_0) Log("[!] startup gate: released after %lu ms without the mod finishing startup", kGateTimeoutMs);
+}
+
+static void InstallStartupGate() {
+    auto* base = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    wchar_t path[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (!base || !length || length >= MAX_PATH || _wcsicmp(PathFindFileNameW(path), kTargetModule) != 0) return;
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || !nt->OptionalHeader.AddressOfEntryPoint) return;
+    uint8_t* entry = base + nt->OptionalHeader.AddressOfEntryPoint;
+    uint8_t* stub = sco::hook::AllocateNear(entry, 64);
+    g_startupDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stub || !g_startupDone) return;
+    // push rcx; sub rsp,0x20; mov rax,StartupGateWait; call rax; add rsp,0x20; pop rcx; mov rax,entry; jmp rax
+    // (rsp is 8 mod 16 at the entry; push makes it 16-aligned for the call; rcx carries the PEB argument.)
+    const uint64_t waitFn = reinterpret_cast<uint64_t>(&StartupGateWait), entryAddr = reinterpret_cast<uint64_t>(entry);
+    uint8_t code[36] = { 0x51, 0x48, 0x83, 0xEC, 0x20, 0x48, 0xB8 };
+    std::memcpy(code + 7, &waitFn, 8);
+    const uint8_t mid[] = { 0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x20, 0x59, 0x48, 0xB8 };
+    std::memcpy(code + 15, mid, sizeof(mid));
+    std::memcpy(code + 24, &entryAddr, 8);
+    code[32] = 0xFF; code[33] = 0xE0;
+    std::memcpy(stub, code, 34);
+    FlushInstructionCache(GetCurrentProcess(), stub, 34);
+    uint8_t jump[12] = { 0x48, 0xB8 };   // mov rax, stub; jmp rax
+    const uint64_t stubAddr = reinterpret_cast<uint64_t>(stub);
+    std::memcpy(jump + 2, &stubAddr, 8);
+    jump[10] = 0xFF; jump[11] = 0xE0;
+    std::memcpy(g_entrySaved, entry, sizeof(g_entrySaved));
+    g_entry = entry;
+    if (!sco::hook::WriteCode(entry, jump, sizeof(jump))) { g_entry = nullptr; CloseHandle(g_startupDone); g_startupDone = nullptr; }
+}
 
 // Read-only anti-cheat inspection; no service/process/module state is modified.
 // Unknown is a refusal, including access-denied, partial enumeration and query errors.
@@ -93,19 +153,103 @@ static AcCheck InspectAntiCheat() {
 }
 
 #ifdef SCO_OFFLINE_G1_HOST
-static sco::game::host::Admission InspectOfflineEnvironment() {
-    namespace gh = sco::game::host;
-    gh::Admission evidence;
-    const AcCheck ac = InspectAntiCheat();
-    evidence.antiCheat = ac == AcCheck::Clear ? gh::Check::Clear :
-                         ac == AcCheck::Present ? gh::Check::Present : gh::Check::Unknown;
+// session/officialNetwork come from the live OS reading in admission_evidence.h / admission_probe.cpp
+// (firewall rule store + this process's TCP table). Launcher flags, IsOnline patch success and EAC
+// absence are NOT evidence. Every decision lives there; this file only maps Tri onto the host's enums.
+using admission::Tri;
+
+static Tri InspectTargetProcess() {
     wchar_t path[MAX_PATH];
     const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
-    if (length && length < MAX_PATH)
-        evidence.targetProcess = _wcsicmp(PathFindFileNameW(path), kTargetModule) == 0 ? gh::Check::Clear : gh::Check::Present;
-    // No verified live session / effective-firewall evidence contract exists in this shell.
-    // Launcher flags, IsOnline patch success and EAC absence are NOT such evidence.
-    // Leave BOTH fields Unknown; never infer offline or blocked official access.
+    if (!length || length >= MAX_PATH) return Tri::Unknown;
+    return _wcsicmp(PathFindFileNameW(path), kTargetModule) == 0 ? Tri::Clear : Tri::Present;
+}
+
+// What the last probe saw, for the [g1] evidence line only.
+struct ProbeDetail {
+    long profiles = 0;
+    unsigned long long rules = 0, ms = 0;
+    bool exeOk = false;
+    long fwHr = 0, tcpError = 0;
+    const char* fwStage = "";
+    const char* tcpStage = "";
+};
+static std::mutex g_probeDetailLock;
+static ProbeDetail g_probeDetail;
+
+static admission::Evidence ProbeEvidence() {
+    const ULONGLONG start = GetTickCount64();
+    const AcCheck ac = InspectAntiCheat();
+    const Tri antiCheat = ac == AcCheck::Clear ? Tri::Clear : ac == AcCheck::Present ? Tri::Present : Tri::Unknown;
+    std::wstring exe;
+    const bool exeOk = admission::CurrentExePath(exe);
+    if (!exeOk) exe.clear(); // empty path: OfficialNetwork() answers Unknown
+    admission::FwSnapshot fw;
+    admission::ProbeFirewall(exe, fw);
+    admission::TcpSnapshot tcp;
+    admission::ProbeTcpTable(tcp);
+    const admission::Evidence ev =
+        admission::Decide(antiCheat, InspectTargetProcess(), fw, exe, tcp, GetCurrentProcessId());
+    std::lock_guard<std::mutex> lock(g_probeDetailLock);
+    g_probeDetail = ProbeDetail{fw.activeProfiles, fw.rulesSeen, GetTickCount64() - start, exeOk,
+                                fw.hr, tcp.error, fw.stage, tcp.stage};
+    return ev;
+}
+
+// D5: positive-only, 1000 ms, monotonic clock. Refusals are never cached.
+static admission::EvidenceCache g_evidence([] { return static_cast<uint64_t>(GetTickCount64()); }, ProbeEvidence);
+
+static void InvalidateEvidence() { g_evidence.Invalidate(); }
+
+static sco::game::host::Check ToCheck(Tri t) {
+    namespace gh = sco::game::host;
+    return t == Tri::Clear ? gh::Check::Clear : t == Tri::Present ? gh::Check::Present : gh::Check::Unknown;
+}
+static sco::game::host::Session ToSession(Tri t) {
+    namespace gh = sco::game::host;
+    return t == Tri::Clear ? gh::Session::Offline : t == Tri::Present ? gh::Session::Online : gh::Session::Unknown;
+}
+static const char* CheckName(Tri t) { return t == Tri::Clear ? "Clear" : t == Tri::Present ? "Present" : "Unknown"; }
+static const char* SessionName(Tri t) { return t == Tri::Clear ? "Offline" : t == Tri::Present ? "Online" : "Unknown"; }
+
+// One line per change of the evidence tuple, never per call.
+static void LogEvidenceIfChanged(const admission::Evidence& ev) {
+    static std::mutex lock;
+    static bool logged = false;
+    static admission::Evidence last;
+    std::lock_guard<std::mutex> guard(lock);
+    if (logged && last.session == ev.session && last.officialNetwork == ev.officialNetwork &&
+        last.antiCheat == ev.antiCheat && last.targetProcess == ev.targetProcess)
+        return;
+    logged = true;
+    last = ev;
+    ProbeDetail d;
+    {
+        std::lock_guard<std::mutex> detail(g_probeDetailLock);
+        d = g_probeDetail;
+    }
+    char failure[192] = "";
+    int used = 0;
+    if (d.fwHr && used >= 0 && used < static_cast<int>(sizeof(failure)))
+        used += std::snprintf(failure + used, sizeof(failure) - used, " firewall_hr=0x%08lX(%s)",
+                              static_cast<unsigned long>(d.fwHr), d.fwStage);
+    if (d.tcpError && used >= 0 && used < static_cast<int>(sizeof(failure)))
+        used += std::snprintf(failure + used, sizeof(failure) - used, " tcp_error=%ld(%s)", d.tcpError, d.tcpStage);
+    if (!d.exeOk && used >= 0 && used < static_cast<int>(sizeof(failure)))
+        std::snprintf(failure + used, sizeof(failure) - used, " exe_path=unavailable");
+    Log("[g1] evidence: session=%s officialNetwork=%s antiCheat=%s target=%s profiles=%ld rules=%llu probe_ms=%llu%s",
+        SessionName(ev.session), CheckName(ev.officialNetwork), CheckName(ev.antiCheat), CheckName(ev.targetProcess),
+        d.profiles, d.rules, d.ms, failure);
+}
+
+static sco::game::host::Admission InspectOfflineEnvironment() {
+    const admission::Evidence ev = g_evidence.Get(InspectTargetProcess()); // target read fresh every call
+    LogEvidenceIfChanged(ev);
+    sco::game::host::Admission evidence;
+    evidence.session = ToSession(ev.session);
+    evidence.officialNetwork = ToCheck(ev.officialNetwork);
+    evidence.antiCheat = ToCheck(ev.antiCheat);
+    evidence.targetProcess = ToCheck(ev.targetProcess);
     return evidence;
 }
 #endif
@@ -242,10 +386,6 @@ static bool PrepareHostKit() {
     // before any script loads. Same tables and permissions as before.
     if (sco_lua_add_extension(&sco_lua_game_extension) != SCO_OK)
         Log("[app] sco-lua: the Star Citizen adapter wasn't added; scripts get no sco.game or sco.datacore");
-    // sc-offline's features as built-in plugins (src/builtins/builtins.h), loaded before any plugin
-    // folder and with plugins on or off. Their capabilities still come from SetFeatureCaps.
-    pf.builtins = kBuiltins;
-    pf.nBuiltins = std::size(kBuiltins);
     // G1 owns original-image signature resolution in the worker's Prepare, outside
     // loader lock. The Platform image/registerSignatures inputs must remain null.
     pf.setCapabilities = SetFeatureCaps;
@@ -269,9 +409,21 @@ static bool PrepareHostKit() {
     options.inspect = InspectOfflineEnvironment;
     options.image = &original;
     options.platform = std::move(pf);
-    if (options.platform.nBuiltins)
-        Log("[app] G1 early DataCore requires external folders; retained builtin inputs refuse (migration pending)");
-    const sco::Result result = offline_host::Prepare(std::move(options));
+    // D6: an admission refusal at load can be transient (firewall service not answering yet). Retry
+    // only that case: Unavailable with the host back at Idle. Each attempt is a full fresh inspection
+    // (refusals are never cached); Options are copied per attempt.
+    constexpr int kPrepareAttempts = 3;
+    constexpr DWORD kPrepareRetryMs = 500;
+    sco::Result result = sco::Result::Unavailable;
+    for (int attempt = 1;; ++attempt) {
+        result = offline_host::Prepare(options);
+        if (result != sco::Result::Unavailable || attempt == kPrepareAttempts ||
+            sco::game::host::Status().phase != sco::game::host::Phase::Idle)
+            break;
+        Log("[app] offline admission refused (attempt %d/%d); retrying in %lu ms", attempt, kPrepareAttempts,
+            static_cast<unsigned long>(kPrepareRetryMs));
+        Sleep(kPrepareRetryMs);
+    }
     g_quitHookStatus = sco::game::host::Status().quitHookInstalled ? "installed by game pack" : "unavailable";
     if (result != sco::Result::Ok) Log("[app] offline admission/prepare refused: %s", sco::ResultName(result));
     return result == sco::Result::Ok;
@@ -287,6 +439,7 @@ static void StopHostKit(const char* trigger) {
 #endif
 #ifdef SCO_OFFLINE_G1_HOST
     const sco::Result result = offline_host::Stop();
+    InvalidateEvidence();
     if (result != sco::Result::Ok) Log("[app] stop (%s) refused: %s", trigger, sco::ResultName(result));
 #else
     (void)trigger;
@@ -302,6 +455,7 @@ static void StopAsopBeforeProviders(const char*, const void*, void*) {
 
 static void StartHostKit() {
 #ifdef SCO_OFFLINE_G1_HOST
+    InvalidateEvidence(); // Start re-inspects: no positive reading carried over from Prepare
     const sco::Result result = offline_host::Start();
     g_hostKitStarted = result == sco::Result::Ok;
     if (!g_hostKitStarted) Log("[app] start refused: %s", sco::ResultName(result));
@@ -343,7 +497,7 @@ static void OnMainThreadTick() {
     const DWORD now = GetTickCount();
     // Re-inspect BEFORE cadence, OS callbacks or retained legacy consumers. Lost
     // admission cancels pending app tasks through G1 without executing them.
-    if (offline_host::Tick(now) != sco::Result::Ok || !offline_host::Running()) return;
+    if (offline_host::Tick(now) != sco::Result::Ok || !offline_host::Running()) { InvalidateEvidence(); return; }
 #ifdef SCO_ASOP_HOST_COMPOSITION
     offline::asop::Pump(now); // EVERY admitted message, never behind tick cadence.
 #else
@@ -423,6 +577,7 @@ static DWORD WINAPI ModThread(LPVOID param) {
             for (;;) Sleep(1000);
         }
         Log("[!] Launch Star Citizen offline with no EAC, then load this. Unloading in 5s.");
+        ReleaseStartupGate();
         Sleep(5000);
         FreeLibraryAndExitThread(self, 0);
     }
@@ -434,6 +589,7 @@ static DWORD WINAPI ModThread(LPVOID param) {
 
     ReadStartOptions();
     StartOffline();
+    ReleaseStartupGate();
     LogStartup();
     RunMainThreadService();
 
@@ -448,7 +604,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hModule);
         InitLog();
         sco::SetLogSink(ForwardCoreLog);
-        CreateThread(nullptr, 0, ModThread, hModule, 0, nullptr);
+        InstallStartupGate();
+        if (!CreateThread(nullptr, 0, ModThread, hModule, 0, nullptr)) ReleaseStartupGate();
     }
     return TRUE;
 }

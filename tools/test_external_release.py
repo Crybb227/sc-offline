@@ -26,6 +26,21 @@ class ExternalRelease(unittest.TestCase):
         self.assertIn('"spawn.ship_options"', shortcut)
         self.assertFalse((ROOT / 'src/builtins/npc_ui.cpp').exists())
 
+    def test_contracts_has_no_host_registration_link_or_tick(self):
+        host = (ROOT / 'CMakeLists.txt').read_text()
+        registry = (ROOT / 'src/builtins/builtins.h').read_text()
+        workflow = (ROOT / '.github/workflows/build.yml').read_text()
+        for feature in ('contracts',):
+            self.assertNotIn('k' + feature.title() + 'Builtin', registry)
+            self.assertNotIn(feature.title() + 'BuiltinOwnsTick', registry)
+            self.assertNotIn(f'src/builtins/{feature}_plugin.cpp', host)
+            self.assertFalse((ROOT / f'src/builtins/{feature}_plugin.cpp').exists())
+        self.assertNotIn('kBuiltins', registry)
+        self.assertIn('src/contracts.cpp', host)  # retained legacy engine, callers unchanged
+        self.assertIn('contracts_sdk_check.py', workflow)
+        self.assertIn('needs: [build, inspector-sdk, npc-sdk, contracts-sdk, external-sdk]', workflow)
+        self.assertIn('built-contracts/contracts/plugin.ini built-contracts/contracts/contracts.dll', workflow)
+
     def test_four_published_components_and_defaults(self):
         host = (ROOT / 'CMakeLists.txt').read_text()
         sdk = (ROOT / 'plugins/CMakeLists.txt').read_text()

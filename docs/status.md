@@ -1,5 +1,11 @@
 # What is not verified in game
 
+## v0.7.8.1 offline startup
+
+Observed once, on one Windows test PC (game 4.10.196.36804, launched through `sc-offline.exe play` with the game running as administrator): `[g1] evidence: session=Offline officialNetwork=Clear antiCheat=Clear target=Clear`, then every offline patch line as in v0.7.7 (including `offline-force (IsOnline = 0): patched` and `local handshake (accept frontend connection): patched`), `[core] signatures: 316/316 OK`, the game quit hook installed, and `bOnline[0]` in `Game.log`. That session had no desktop, so the game did not render or reach the menu.
+
+**NOT VERIFIED:** the firewall read from a game running with normal rights (the usual case; if Windows denies it, the evidence line shows `Unknown` and startup refuses); reaching the menu and playing; contracts (expected to refuse until the SDK publishes its providers); every feature below.
+
 ## G13 external multiplayer (R1)
 
 `plugins/multiplayer` has an enabled independent install, no built-in fallback,
@@ -13,14 +19,13 @@ The targeted actual-module fixture passed with synthetic public providers;
 core separately exercised its real broker/backend through synthetic transport.
 The pinned published SDK 2.2.0 ships these contracts; 2.0.0 did not. CI release-job staging,
 Windows/MSVC, real renderer/input, live admission, private LAN and gameplay are
-**NOT VERIFIED**. The current shell still reports offline-session/effective
-network evidence Unknown, so production admission refuses rather than inferring
-safety from flags or patch success. The source/SDK migration is not certification
-that the shell can start a production session.
+**NOT VERIFIED**. Since v0.7.8.1 the shell reports offline-session and network
+evidence from live firewall and connection reads (see above); it still never infers
+safety from flags or patch success.
 
 The host is pinned to published sco-core `sdk-v2.2.0`, commit `686187ce936400450d448f1fe754b1e58263e4af` (the release approval commit; the release archives were built from `81437e1a12993a4484308bd76443a003ae57b7fa`): SDK **2.2.0**, plugin ABI **1.1** (unchanged), Star Citizen game pack **0.5.0**. The game pack's signature evidence targets Star Citizen **4.10.196.36804**; it is not a game-session result for this product pin.
 
-The release-pin smoke checks remain **NOT RUN** on Windows/in game: offline startup; EAC detection/refusal; services published before plugins; menu; clean exit. CI build success does not close these owner-run checks.
+The release-pin smoke checks: offline startup was **observed once** for v0.7.8.1 (above); EAC detection/refusal, services published before plugins, menu and clean exit remain **NOT RUN** in game. CI build success does not close these owner-run checks.
 
 **The only game session reported since the SDK conversion is one maintainer run of v0.7.7** (sco-core `2197dfb`, game pack 0.2.0, NVIDIA Smooth Motion off), recorded in the [v0.7.7 release notes](https://github.com/scubamount/sc-offline/releases/tag/v0.7.7). It was a single run, not a per-feature check, and the newer pins (`main` on `sdk-v2.0.0`, PR #126 on `sdk-v2.1.0`) have not run in game. CI proves the code compiles, the gates hold, and the binaries have the right shape. It does not prove a feature works. The current owner decision is CI-gated PR merge and user testing of official
 releases; owner Windows/in-game acceptance remains **NOT RUN**. No synthetic

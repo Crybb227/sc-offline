@@ -47,7 +47,7 @@ class NpcRelease(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/build.yml').read_text()
         self.assertIn('npc-sdk-posix:', workflow)
         self.assertIn('npc-sdk:', workflow)
-        self.assertIn('needs: [build, inspector-sdk, npc-sdk, external-sdk]', workflow)
+        self.assertIn('needs: [build, inspector-sdk, npc-sdk, contracts-sdk, external-sdk]', workflow)
         self.assertIn('built-npc/npc/plugin.ini built-npc/npc/npc.dll', workflow)
         self.assertIn('test ! -e "stage/$pkg/data/plugins/npc/disabled"', workflow)
 
