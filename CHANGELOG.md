@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.7.8.2 (2026-10-15)
 
+- **Contracts work again.** Contracts run on the mod's own contracts engine, as in v0.7.7: the mobiGlas lists them about 15 seconds after you spawn, accepted missions run, rewards are paid, and kill objectives count deaths again. Your balance is kept in `data/wallet.txt`. The `contracts.status` command from v0.7.7 is not back, and `data/storage/contracts.db` is no longer updated. The `contracts` plugin still ships; it answers that its game services aren't available yet and does nothing else.
+- Startup was confirmed on a second Windows PC with the game running with normal rights: the offline check passed, every offline patch applied, and the game loaded into the universe.
 - The optional co-presence module's source now lives in its own repository, [scubamount/sc-mp](https://github.com/scubamount/sc-mp). sc-offline no longer builds it; releases since 0.7.8 have not included it, so nothing you download changes.
 
 ## 0.7.8.1 (2026-10-15)
