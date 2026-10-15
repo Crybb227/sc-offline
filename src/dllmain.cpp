@@ -35,6 +35,9 @@
 #include <cstdio>
 #endif
 #include "sco/runtime.h"
+#ifdef SCO_OFFLINE_RELOCATION_SWITCH
+#include "sco/game/services.h"
+#endif
 #include <sc_game_events.h>
 #include "sco_lua.h"
 #include "sco_lua_game.h"   // sco.datacore, sco.game.* and the game.* payloads for Lua scripts
@@ -367,7 +370,23 @@ static void ConfigurePrivateSession(sco::app::Platform& pf) {
 }
 #endif
 
+// sc-offline.ini relocation = on|off (SC_OFFLINE_RELOCATION; unset = on): the host switch for sco-core's
+// game.relocation. Off is a hard off. On only lets sco-core's own checks decide (fresh offline admission,
+// verified engine rows, live player, known star system); it never bypasses them.
+static void ApplyRelocationSwitch() {
+    char value[8]{};
+    const DWORD n = GetEnvironmentVariableA("SC_OFFLINE_RELOCATION", value, sizeof(value));
+    const bool on = n == 0 || (n < sizeof(value) && _stricmp(value, "on") == 0);
+#ifdef SCO_OFFLINE_RELOCATION_SWITCH
+    sco::game::services::SetRelocationEnabled(on);
+    Log("[app] relocation = %s (game.relocation still requires sco-core's offline admission)", on ? "on" : "off");
+#else
+    Log("[app] relocation = %s: the pinned sco-core has no relocation switch; game.relocation stays as the pin ships it", on ? "on" : "off");
+#endif
+}
+
 static bool PrepareHostKit() {
+    ApplyRelocationSwitch();
     sco::app::Platform pf;
     pf.hostVersion = SCO_TITLE;
     char dir[MAX_PATH];

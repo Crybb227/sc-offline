@@ -1,14 +1,33 @@
-# Teleport / quick-save — G2 REFUSE consumer
+# Teleport / quick-save and return
 
-`teleport.save` (F7) and `teleport.go` (F8) always return `SCO_UNAVAILABLE`. No relocation request, private pointer write, auto-placement or refinement mutation is attempted. This is intentional owner policy, not a signature readiness claim. `teleport.inspect` reads a saved exact/partial restoration candidate through G3; root-only and stale matches refuse. `teleport.status` reports retained state/refusal.
+`teleport.save` (F7) captures where you are, read-only: the full pose and its observed zone ancestry through `game.spatial`, stored as before. `teleport.go` (F8) moves you back to the saved spot through sco-core's public **`game.relocation` 1.0** (`sc_relocation.h`). `teleport.inspect` reads the saved exact/partial restoration candidate without moving; root-only and stale matches refuse. `teleport.status` reports the saved state, the move switch, whether `game.relocation` is on and any move in progress.
 
-Retains owner ID/database `teleport`, key `spot`, import marker `spawn.txt.time` and original `spot x y z zone` syntax. Existing `spawn.txt` imports transactionally once per changed Windows FILETIME. `spawn_file` overrides its path; empty inherits launcher `SC_OFFLINE_SPAWN_FILE`, otherwise `data_root/spawn.txt`. Quick-save remains refused; read/import machinery cannot mutate the player.
+## How a move works
+
+1. The plugin's `relocation` setting must be on, then the capability `game.relocation` is checked fresh, before anything else.
+2. The saved spot is resolved to a live zone id and a pose local to that zone; unloaded, expired or root-only matches refuse.
+3. One request (zone id, local position, rotation, 30 s timeout) goes to `game.relocation`. One move at a time; the ticket is never persisted.
+4. The plugin follows the ticket every game tick and reports the end once: arrived, or failed/cancelled with the provider's reason (timeout; session, player or system changed; offline admission or switch withdrawn; different star system; the game did not start the move; provider fault).
+
+`game.relocation` only moves you in the star system you are already in, and only while sco-core certifies offline admission, has a verified engine backend, a live player and a known star system. **That needs this release's host: sco-core main e616ed6 or later.** Moves work only while offline admission is positive, the engine rows resolve, there is a live player and a known star system; otherwise F8 answers unavailable and nothing moves. The plugin has no private fallback.
+
+## Switches
+
+- Plugin setting `relocation` (bool, default true, "Allow moving the player (offline only)"): off makes `teleport.go` answer unavailable with that reason. Saving and inspecting keep working.
+- Host: `relocation = on|off` in `sc-offline.ini` (default on) turns moving off for every plugin through sco-core's `SetRelocationEnabled` (present in the e616ed6 pin). Neither switch bypasses offline admission.
+
+## Storage
+
+Retains owner ID/database `teleport`, key `spot`, import marker `spawn.txt.time` and original `spot x y z zone` syntax (plus additive `pose x y z w` lines). Existing `spawn.txt` imports transactionally once per changed Windows FILETIME. `spawn_file` overrides its path; empty inherits launcher `SC_OFFLINE_SPAWN_FILE`, otherwise `data_root/spawn.txt`. Without `sco.storage`, F7 writes the spawn file instead.
 
 ## Build and install
-1. Obtain/extract a core+game or combined SDK containing `sc_game_spatial.h`; the pinned published `sdk-v2.2.0` contains it (`sdk-v2.0.0` did not).
-2. Configure `cmake -S plugins/teleport -B build-teleport -DSCO_SDK_INCLUDE_DIR=/path/to/extracted/include`, then build `sc-offline-teleport`.
-3. Install the teleport component into the product root (`cmake --install build-teleport --prefix /path/to/product --component teleport`). The resulting `data/plugins/teleport/` contains its native entry and manifest; enable through ordinary plugin-folder semantics. Built-in IDs/fallbacks are removed, so `plugins=off` really disables these features.
 
-Native modules are trusted code. GPL-3.0-only. Calls run synchronously on the game thread; copied metadata is never treated as valid across commands/ticks. Optional `sco.widgets` panels avoid host/ImGui headers; absent renderer leaves command-only operation. Missing/readiness/expired tables refuse instead of opening private engine paths. Unload removes panels/hotkeys and retains databases. No unmanaged worker or tick mutation exists.
+1. Extract the published `sdk-v2.3.0` archive (it contains `sc_relocation.h` and `sc_game_spatial.h`) and verify it against the release `SHA256SUMS`.
+2. `cmake -S plugins/teleport -B build-teleport -DSCO_SDK_INCLUDE_DIR=/path/to/extracted/include [-DSCO_TRAVEL_TEST=ON]`, then build `sc-offline-teleport` (and `travel-model-test`).
+3. `cmake --install build-teleport --prefix /path/to/product --component teleport` gives `data/plugins/teleport/` with the native module and its enabled manifest.
 
-**Evidence: macOS AppleClang configure/compile/link only. Tests NOT RUN (owner speed order); Windows/MSVC, UI rendering, storage import-twice, dynamic load/reload, sanitizers/checker and game behavior NOT VERIFIED.**
+`tools/check_teleport_sdk.py --archive sco-sdk-2.3.0.zip --sums SHA256SUMS --work <new dir>` does all of this outside the checkout, runs the synthetic travel model test, traces compiler dependencies, runs boundary negatives and a relocation red arm (POSIX), and runs the SDK's `sco-plugin-check`.
+
+Native modules are trusted code. GPL-3.0-only. Calls run on the game thread; copied metadata is never treated as valid across commands/ticks. Optional `sco.widgets` panel; an absent renderer leaves command-only operation. Unload removes panels, hotkeys and its tick subscription; `game.relocation` cancels and forgets the plugin's tickets on unload.
+
+**Evidence: development machine only.** Built against the published SDK 2.3.0 with synthetic providers and the SDK checker with no game services. Windows/MSVC, the real renderer, storage import twice, and every in-game move: **NOT VERIFIED; not run in game.**

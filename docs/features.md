@@ -131,7 +131,7 @@ The Gladius' new quantum drive (hold Caps Lock, or B for NAV mode then hold left
 
 ## Plugins
 
-sc-offline can load plugins built with the [sco SDK](https://github.com/scubamount/sco-core/blob/main/sdk/README.md): native DLLs, Lua scripts and data packs. Loading is **on by default** (`plugins = on` in `sc-offline.ini`); the current release recipe stages six external native IDs: `spawn`, `crew`, `npc`, `inspector` (on), `discord` and `creative` (off). Other external implementations await staging; [status](status.md) distinguishes source implementation from distribution. None has a hidden built-in fallback.
+sc-offline can load plugins built with the [sco SDK](https://github.com/scubamount/sco-core/blob/main/sdk/README.md): native DLLs, Lua scripts and data packs. Loading is **on by default** (`plugins = on` in `sc-offline.ini`); the current release recipe stages external native IDs `spawn`, `crew`, `build`, `npc`, `inspector`, `teleport`, `quantum` (on), `discord` and `creative` (off). Other external implementations await staging; [status](status.md) distinguishes source implementation from distribution. None has a hidden built-in fallback.
 
 1. Keep `plugins = on` in `sc-offline.ini`.
 2. Put each plugin in its own folder, `data/plugins/<id>/`, with its `plugin.ini` (for example `data/plugins/hello/plugin.ini` and `hello.dll`). The SDK's examples (`hello`, `greeter`, `travel_pack`) are ready to copy.

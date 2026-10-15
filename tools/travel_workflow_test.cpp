@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Synthetic public-provider fixtures only; no game data or private frames.
 #include "../plugins/spatial/travel_model.h"
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -29,6 +32,17 @@ static int Convert(uint64_t from,uint64_t to,const double* p,const double* q,dou
     if (expire) ++epoch;
     return 1;
 }
+static bool cap=false; static int requests=0; static uint32_t state=SC_RELOCATION_PENDING, reason=0;
+static sc_relocation_request last{};
+static int HasCap(const char* name) { return cap && !std::strcmp(name,SC_RELOCATION_NAME); }
+static sco_result Request(sco_plugin*,const sc_relocation_request* q,uint64_t* t) {
+    ++requests; assert(q && q->size==sizeof(*q) && q->timeout_ms>=1 && q->timeout_ms<=60000); last=*q; *t=42; return SCO_OK;
+}
+static sco_result Cancel(sco_plugin*,uint64_t) { return SCO_OK; }
+static sco_result Status(sco_plugin*,uint64_t t,sc_relocation_status* s) {
+    if (t!=42) return SCO_NOT_FOUND;
+    assert(s->size==sizeof(*s)); s->state=state; s->reason=reason; s->applied=state==SC_RELOCATION_COMPLETE; s->ticket=t; return SCO_OK;
+}
 static int Player(double* p,double* q,uint64_t* id) { p[0]=1;p[1]=0;p[2]=2;q[0]=0;q[1]=0;q[2]=0;q[3]=1;*id=1;return 1; }
 static int List(uint64_t e,uint32_t offset,sc_game_zone* z,uint32_t stride,uint32_t cap,uint32_t* n,uint32_t* more,uint64_t* out) {
     ++pages; assert(cap <= 64 && stride == sizeof(*z));
@@ -56,7 +70,25 @@ int main() {
     sp.size=offsetof(sc_game_spatial_v1,list_zones)+sizeof(sp.list_zones)-1;
     assert(Scan(&sp,records)==SCO_UNAVAILABLE && records.size()==256);
     sp.size=sizeof(sp); sp.find_zone=nullptr; assert(Resolve(&sp,again,r)==SCO_UNAVAILABLE);
-    assert(Relocate()==SCO_UNAVAILABLE); // unconditional even if a provider advertises mutation
+    // game.relocation: fresh capability, full member extents, valid pose, then one request and status polling.
+    sco_api api{}; api.size=sizeof(api); api.has=HasCap;
+    sc_relocation_v1 rel{sizeof(rel),Request,Cancel,Status};
+    uint64_t ticket=0;
+    assert(Relocate(&api,&rel,nullptr,s.z[0],ticket)==SCO_UNAVAILABLE && !requests && !ticket); // capability off
+    cap=true; rel.size=offsetof(sc_relocation_v1,status)+sizeof(rel.status)-1;
+    assert(Relocate(&api,&rel,nullptr,s.z[0],ticket)==SCO_UNAVAILABLE && !requests); rel.size=sizeof(rel); // partial table
+    assert(Relocate(&api,nullptr,nullptr,s.z[0],ticket)==SCO_UNAVAILABLE && !requests); // service absent
+    Pose bad=s.z[0]; bad.zone=0; assert(Relocate(&api,&rel,nullptr,bad,ticket)==SCO_BAD_ARG && !requests);
+    bad=s.z[0]; bad.rot[0]=bad.rot[1]=bad.rot[2]=bad.rot[3]=0; assert(Relocate(&api,&rel,nullptr,bad,ticket)==SCO_BAD_ARG && !requests);
+    assert(Relocate(&api,&rel,nullptr,s.z[1],ticket)==SCO_OK && ticket==42 && requests==1);
+    assert(last.zone_id==s.z[1].zone && last.pos[0]==s.z[1].pos[0] && last.pos[1]==s.z[1].pos[1] && last.rot_xyzw[2]==s.z[1].rot[2] && last.rot_xyzw[3]==s.z[1].rot[3]);
+    sc_relocation_status st{}; assert(Poll(&rel,nullptr,ticket,st)==SCO_OK && st.state==SC_RELOCATION_PENDING);
+    state=SC_RELOCATION_COMPLETE; assert(Poll(&rel,nullptr,ticket,st)==SCO_OK && st.state==SC_RELOCATION_COMPLETE && st.applied);
+    state=SC_RELOCATION_FAILED; reason=SC_RELOCATION_REASON_SYSTEM;
+    assert(Poll(&rel,nullptr,ticket,st)==SCO_OK && st.state==SC_RELOCATION_FAILED && st.reason==SC_RELOCATION_REASON_SYSTEM && ReasonText(st.reason)[0]);
+    state=9; assert(Poll(&rel,nullptr,ticket,st)==SCO_FAILED && st.state==SC_RELOCATION_FAILED); // unknown state: output unchanged
+    assert(Poll(&rel,nullptr,7,st)==SCO_NOT_FOUND && Poll(&rel,nullptr,0,st)==SCO_UNAVAILABLE);
+    cap=false; assert(Relocate(&api,&rel,nullptr,s.z[1],ticket)==SCO_UNAVAILABLE && requests==1); // re-checked per request
     assert(!ParseSpot("spot nan 0 0 bad\n",again));
-    std::puts("travel model: nested rotated poses, legacy format, partial/root refusal, expiry, 256/64 bounded scan, partial/null tails, G2 REFUSE: PASS");
+    std::puts("travel model: nested rotated poses, legacy format, partial/root refusal, expiry, 256/64 bounded scan, partial/null tails, game.relocation request/status gating: PASS");
 }

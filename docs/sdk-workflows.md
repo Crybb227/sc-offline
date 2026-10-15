@@ -33,8 +33,8 @@ legacy product picker tabs are removed. Legacy `src/npc.cpp` is untouched. `src/
 
 Use published **`sdk-v2.2.0`**, combined **`sco-sdk-2.2.0.zip`**, verified against
 release **`SHA256SUMS`**: SDK 2.2.0, plugin ABI 1.1 and Star Citizen game pack 0.5.0
-are distinct versions. The Windows host independently uses the tagged submodule
-`686187ce936400450d448f1fe754b1e58263e4af`; a plugin archive cannot build the full host.
+are distinct versions. The Windows host independently uses the submodule pinned to sco-core `main` after `sdk-v2.3.0`,
+`e616ed69d8f9f77b0f4827881c86d91e4a7d1689`; a plugin archive cannot build the full host.
 
 Standalone modules/manifests stage under `<plugin-build>/test-plugins/{npc,inspector}/`.
 Windows emits `npc.dll` and `inspector.dll`; macOS/Linux emit development-only

@@ -3,6 +3,9 @@
 #include <sco_api.h>
 #include <sc_quantum.h>
 #include <sco_widgets.h>
+#include <sco_settings.h>
+#include <sc_game_spatial.h>
+#include <sc_relocation.h>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -10,8 +13,12 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -19,15 +26,43 @@
 #endif
 namespace {
 std::map<std::string,sco_command> commands;
-sco_event_fn tick=nullptr; void* tick_ctx=nullptr;
+std::vector<std::pair<sco_event_fn,void*>> ticks; // the real host allows one subscription per fn
 sco_widget_event_fn event=nullptr; void* event_ctx=nullptr;
 bool capability=false, enabled=false, held=false, available=true;
 int enables=0,holds=0,releases=0,panels=0; uint32_t duration=0;
 const void* service=nullptr;
-int Has(const char* name) { return capability && !std::strcmp(name,"game.quantum.control"); }
+bool relocation_cap=false; int32_t allow=1; std::string data_root,last_status;
+int requests=0; uint32_t reloc_state=SC_RELOCATION_PENDING; sc_relocation_request last_request{};
+int Has(const char* name) { return (capability && !std::strcmp(name,"game.quantum.control")) || (relocation_cap && !std::strcmp(name,SC_RELOCATION_NAME)); }
+sco_result GetBool(sco_plugin*,const char* name,int32_t* out) { if (std::strcmp(name,"relocation")) return SCO_NOT_FOUND; *out=allow; return SCO_OK; }
+sco_result GetString(sco_plugin*,const char* name,char* out,uint32_t* n) {
+    if (std::strcmp(name,"data_root") || data_root.empty()) return SCO_NOT_FOUND;
+    if (*n<data_root.size()+1) { *n=static_cast<uint32_t>(data_root.size()+1); return SCO_TOO_MANY; }
+    std::memcpy(out,data_root.c_str(),data_root.size()+1); *n=static_cast<uint32_t>(data_root.size()+1); return SCO_OK;
+}
+sco_settings_v1 settings{sizeof(settings),0,GetBool,nullptr,nullptr,GetString,nullptr};
+int FindZone(const char* name,sc_game_zone* z) {
+    if (std::strcmp(name,"port_zone")) return 0;
+    *z={sizeof(*z),SC_GAME_ZONE_SYSTEM_UNKNOWN,5,77,0,77,0,{}}; std::snprintf(z->name,sizeof(z->name),"port_zone"); return 1;
+}
+sc_game_spatial_v1 spatial{};
+sco_result RelRequest(sco_plugin*,const sc_relocation_request* r,uint64_t* t) { ++requests; assert(r && r->size==sizeof(*r)); last_request=*r; *t=9; reloc_state=SC_RELOCATION_PENDING; return SCO_OK; }
+sco_result RelCancel(sco_plugin*,uint64_t) { return SCO_OK; }
+sco_result RelStatus(sco_plugin*,uint64_t t,sc_relocation_status* s) { if (t!=9) return SCO_NOT_FOUND; s->state=reloc_state; s->ticket=t; s->applied=reloc_state==SC_RELOCATION_COMPLETE; return SCO_OK; }
+sc_relocation_v1 relocation{sizeof(relocation),RelRequest,RelCancel,RelStatus};
+void Status(sco_plugin*,const char* message) { last_status=message; }
 sco_result Register(sco_plugin*,const sco_command* c) { assert(c && c->size==sizeof(*c)); commands[c->name]=*c; return SCO_OK; }
-sco_result Subscribe(sco_plugin*,const char* name,sco_event_fn fn,void* ctx) { assert(!std::strcmp(name,"tick") && !tick); tick=fn; tick_ctx=ctx; return SCO_OK; }
-sco_result Unsubscribe(sco_plugin*,const char*,sco_event_fn fn) { assert(tick==fn); tick=nullptr; tick_ctx=nullptr; return SCO_OK; }
+sco_result Subscribe(sco_plugin*,const char* name,sco_event_fn fn,void* ctx) {
+    assert(!std::strcmp(name,"tick") && fn);
+    for (const auto& t:ticks) assert(t.first!=fn);
+    ticks.emplace_back(fn,ctx); return SCO_OK;
+}
+sco_result Unsubscribe(sco_plugin*,const char* name,sco_event_fn fn) {
+    assert(!std::strcmp(name,"tick"));
+    for (auto it=ticks.begin();it!=ticks.end();++it) if (it->first==fn) { ticks.erase(it); return SCO_OK; }
+    assert(!"unsubscribe of an unknown tick fn"); return SCO_NOT_FOUND;
+}
+void Tick(uint32_t now) { const auto copy=ticks; for (const auto& t:copy) t.first("tick",&now,t.second); }
 sco_result Enable(sco_plugin*,uint32_t on) { ++enables; assert(on<=1); if (on && !available) return SCO_UNAVAILABLE; enabled=on!=0; if (!on) held=false; return SCO_OK; }
 sco_result Hold(sco_plugin*,uint32_t ms) { ++holds; assert(ms>=1 && ms<=1000); if (!enabled || !available) return SCO_UNAVAILABLE; held=true; duration=ms; return SCO_OK; }
 sco_result Release(sco_plugin*) { ++releases; held=false; return enabled ? SCO_OK:SCO_NOT_FOUND; }
@@ -45,6 +80,9 @@ sco_result Query(const char* name,uint32_t version,const void** out) {
     assert(version==0x10000u); *out=nullptr;
     if (!std::strcmp(name,SC_QUANTUM_SERVICE_NAME)) *out=service;
     if (!std::strcmp(name,SCO_WIDGETS_NAME)) *out=&widgets;
+    if (!std::strcmp(name,SCO_SETTINGS_NAME)) *out=&settings;
+    if (!std::strcmp(name,SC_GAME_SPATIAL_NAME)) *out=&spatial;
+    if (!std::strcmp(name,SC_RELOCATION_NAME) && relocation_cap) *out=&relocation;
     return *out ? SCO_OK:SCO_NOT_FOUND;
 }
 sco_result Call(const char* name,const sco_arg* args=nullptr,uint32_t n=0) { char reply[512]{}; assert(commands.count(name)); const auto& c=commands.at(name); return c.fn(args,n,c.ctx,reply,sizeof(reply)); }
@@ -62,13 +100,32 @@ int main(int argc,char** argv) {
 #endif
     assert(load && unload);
     sco_api api{}; api.size=sizeof(api); api.major=SCO_API_MAJOR; api.minor=SCO_API_MINOR;
-    api.has=Has; api.query_service=Query; api.register_command=Register; api.subscribe=Subscribe; api.unsubscribe=Unsubscribe;
+    api.has=Has; api.query_service=Query; api.register_command=Register; api.subscribe=Subscribe; api.unsubscribe=Unsubscribe; api.status=Status;
+    spatial.size=sizeof(spatial); spatial.find_zone=FindZone;
+    const auto root=std::filesystem::temp_directory_path()/"sco-quantum-workflow-test";
+    std::filesystem::remove_all(root); std::filesystem::create_directories(root); data_root=root.string();
+    { std::ofstream(root/"locations.txt")<<"Stanton | Port | port_zone | 10\n"; }
     int identity=1; auto* self=reinterpret_cast<sco_plugin*>(&identity);
-    assert(load(&api,self)==SCO_OK && panels && tick && enables==0 && holds==0);
+    assert(load(&api,self)==SCO_OK && panels && ticks.size()==1 && enables==0 && holds==0);
     for (const auto* name:{"quantum.travel","quantum.bookmark","quantum.save_bookmark","quantum.scan","quantum.status","quantum.enable","quantum.hold","quantum.release","quantum.boost","quantum.control_status"}) assert(commands.count(name));
     sco_arg on{}; on.type=SCO_ARG_BOOL; on.v.i=1;
     assert(Call("quantum.enable",&on,1)==SCO_UNAVAILABLE && enables==0);
-    assert(Call("quantum.travel")==SCO_UNAVAILABLE); // G2 unchanged even with future capabilities
+    // game.relocation: switch, then capability, both before arguments; one tracked request; terminal state reported once.
+    assert(Call("quantum.travel")==SCO_UNAVAILABLE && Call("quantum.bookmark")==SCO_UNAVAILABLE && !requests); // capability absent
+    relocation_cap=true;
+    assert(Call("quantum.travel")==SCO_BAD_ARG && !requests); // capability on: arguments are checked, nothing requested
+    allow=0; assert(Call("quantum.travel")==SCO_UNAVAILABLE && Call("quantum.bookmark")==SCO_UNAVAILABLE && !requests); allow=1; // player switch off
+    sco_arg trip[2]{}; trip[0].type=SCO_ARG_STRING; trip[0].v.s="Port"; trip[1].type=SCO_ARG_FLOAT; trip[1].v.f=99;
+    assert(Call("quantum.travel",trip,2)==SCO_BAD_ARG && !requests); trip[1].v.f=500;
+    trip[0].v.s="Nowhere"; assert(Call("quantum.travel",trip,2)==SCO_NOT_FOUND && !requests); trip[0].v.s="Port";
+    assert(Call("quantum.travel",trip,2)==SCO_OK && requests==1 && ticks.size()==2);
+    assert(last_request.zone_id==77 && last_request.pos[2]==510 && last_request.rot_xyzw[3]==1 && last_request.timeout_ms>=1 && last_request.timeout_ms<=60000);
+    assert(Call("quantum.travel",trip,2)==SCO_TOO_MANY && requests==1); // one active request
+    uint32_t now=100; Tick(now); assert(ticks.size()==2 && last_status.empty()); // pending: still tracked
+    reloc_state=SC_RELOCATION_COMPLETE; Tick(now); assert(ticks.size()==1 && !last_status.empty()); // reported once, then untracked
+    last_status.clear(); assert(Call("quantum.travel",trip,2)==SCO_OK && requests==2 && ticks.size()==2);
+    reloc_state=SC_RELOCATION_FAILED; Tick(now); assert(ticks.size()==1 && !last_status.empty());
+    relocation_cap=false; assert(Call("quantum.travel",trip,2)==SCO_UNAVAILABLE && requests==2); // re-checked per command
     on.v.i=2; assert(Call("quantum.enable",&on,1)==SCO_BAD_ARG); on.v.i=1;
     capability=true;
     auto* short_table=static_cast<sc_quantum_v1*>(std::malloc(8)); assert(short_table); *reinterpret_cast<uint32_t*>(short_table)=8; service=short_table;
@@ -83,10 +140,11 @@ int main(int argc,char** argv) {
     capability=false; assert(Call("quantum.release")==SCO_OK && !held); // cancellation ignores capability
     capability=true;
     sco_widget_event e{sizeof(e),103,SCO_WIDGET_BUTTON,0,0,nullptr}; event("quantum.travel",&e,event_ctx); assert(held);
-    capability=false; uint32_t now=500; tick("tick",&now,tick_ctx); assert(!enabled && !held);
+    capability=false; now=500; Tick(now); assert(!enabled && !held);
     capability=true; assert(Call("quantum.enable",&on,1)==SCO_OK);
     assert(Call("quantum.hold",&ms,1)==SCO_OK);
-    unload(); unload(); assert(!enabled && !held && !tick && !event);
+    relocation_cap=true; assert(Call("quantum.travel",trip,2)==SCO_OK && requests==3 && ticks.size()==2); // in flight at unload
+    unload(); unload(); assert(!enabled && !held && ticks.empty() && !event); relocation_cap=false;
     // A provider release hook is NOT emulated here: ordinary unload requests cleanup.
     commands.clear(); const auto writes=enables; assert(load(&api,self)==SCO_OK && enables==writes);
     available=false; assert(Call("quantum.control_status")==SCO_UNAVAILABLE); unload();
@@ -95,5 +153,6 @@ int main(int argc,char** argv) {
 #else
     dlclose(module);
 #endif
-    std::puts("quantum actual-module PASS: legacy commands/Travel, no startup writes, absent/partial/null refusal, bounded controls, capability loss, widgets and unload/reload; synthetic G8 only");
+    std::filesystem::remove_all(root);
+    std::puts("quantum actual-module PASS: legacy commands/Travel, no startup writes, absent/partial/null refusal, bounded controls, capability loss, game.relocation switch/capability/request/tick tracking, widgets and unload/reload; synthetic only");
 }

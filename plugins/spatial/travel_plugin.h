@@ -25,7 +25,8 @@ struct State {
     std::vector<Bookmark> marks; std::vector<Destination> places;
     Spot saved; bool hotkeys=false,panel=false;
     uint32_t place_page=0,mark_page=0; int32_t selected_place=-1,selected_mark=-1;
-    std::string bookmark_name,filter,last_status="G2 REFUSE: movement unavailable"; double altitude=1000;
+    std::string bookmark_name,filter,last_status="Ready"; double altitude=1000;
+    uint64_t ticket=0; bool ticking=false; std::string moving; // one tracked game.relocation request; never persisted
 } g;
 #ifdef TRAVEL_TELEPORT
 constexpr const char* id="teleport";
@@ -185,9 +186,98 @@ sco_result LoadSaved() {
     if (r==SCO_OK && !ParseSpot(text,g.saved)) return SCO_BAD_ARG;
     return r==SCO_NOT_FOUND ? SCO_OK : r;
 }
-sco_result Refuse(const sco_arg*,uint32_t,void*,char* out,uint32_t n) { return Reply(Relocate(),out,n,refusal); }
+// Player switch: plugin.ini [settings] relocation (default true); an absent settings service keeps that default.
+bool MovesAllowed() {
+    const auto* st=Open<sco_settings_v1>(SCO_SETTINGS_NAME); int32_t on=1;
+    if (TRAVEL_FN(st,sco_settings_v1,get_bool) && st->get_bool(g.self,"relocation",&on)==SCO_OK) return on!=0;
+    return true;
+}
+bool RelocationOn() { return TRAVEL_FN(g.api,sco_api,has) && g.api->has(SC_RELOCATION_NAME); }
+// Every move command checks the switch, then the capability, fresh, before reading its arguments.
+sco_result Ready(std::string& why) {
+    if (!MovesAllowed()) { why=switched_off; return SCO_UNAVAILABLE; }
+    if (!RelocationOn()) { why=unavailable; return SCO_UNAVAILABLE; }
+    return SCO_OK;
+}
+bool SafePlace(const char* name) { return name && name[0] && std::strlen(name)<=95 && !std::strpbrk(name,"|\r\n"); }
+void Panel();
+void TravelTick(const char*,const void*,void*) noexcept;
+void StopTracking() {
+    if (g.ticking && TRAVEL_FN(g.api,sco_api,unsubscribe)) g.api->unsubscribe(g.self,"tick",TravelTick);
+    g.ticking=false; g.ticket=0;
+}
+// Game thread, per tick while a request is tracked: status only reads; report the terminal state once.
+void TravelTick(const char*,const void*,void*) noexcept {
+    try {
+        if (!g.ticket) { StopTracking(); return; }
+        sc_relocation_status s{};
+        const auto r=Poll(Open<sc_relocation_v1>(SC_RELOCATION_NAME),g.self,g.ticket,s);
+        if (r==SCO_OK && s.state==SC_RELOCATION_PENDING) return;
+        std::string text; sco_result result=SCO_FAILED;
+        if (r!=SCO_OK) text="Lost track of the move to "+g.moving+" (game.relocation status unavailable); arrival not confirmed";
+        else if (s.state==SC_RELOCATION_COMPLETE) { result=SCO_OK; text="Arrived at "+g.moving; }
+        else text=std::string(s.state==SC_RELOCATION_CANCELLED?"Move cancelled":"Move failed")+" ("+ReasonText(s.reason)+"): "+g.moving+(s.applied?"; the move had started":"; not moved");
+        StopTracking(); g.moving.clear();
+        g.last_status=text; Reply(result,nullptr,0,text);
+        if (TRAVEL_FN(g.api,sco_api,status)) g.api->status(g.self,text.c_str());
+        Panel();
+    } catch (...) { /* host callback never receives a C++ exception */ }
+}
+sco_result Move(const Pose& target,const std::string& label,char* out,uint32_t n) {
+    if (g.ticket) return Reply(SCO_TOO_MANY,out,n,"Already moving to "+g.moving+"; one move at a time");
+    if (!MovesAllowed()) return Reply(SCO_UNAVAILABLE,out,n,switched_off);
+    if (!TRAVEL_FN(g.api,sco_api,subscribe) || !TRAVEL_FN(g.api,sco_api,unsubscribe)) return Reply(SCO_UNAVAILABLE,out,n,"Cannot follow a move without game ticks; not moved");
+    const auto* service=Open<sc_relocation_v1>(SC_RELOCATION_NAME);
+    uint64_t ticket=0; const auto r=Relocate(g.api,service,g.self,target,ticket);
+    if (r!=SCO_OK) return Reply(r,out,n,r==SCO_UNAVAILABLE?std::string(unavailable):r==SCO_TOO_MANY?"Another move is in progress; not moved":
+        r==SCO_BAD_ARG?"Destination pose rejected; not moved":"game.relocation refused the move; not moved");
+    if (g.api->subscribe(g.self,"tick",TravelTick,nullptr)!=SCO_OK) {
+        if (TRAVEL_FN(service,sc_relocation_v1,cancel)) service->cancel(g.self,ticket);
+        return Reply(SCO_FAILED,out,n,"Cannot follow the move (tick subscription refused); request cancelled");
+    }
+    g.ticking=true; g.ticket=ticket; g.moving=label;
+    return Reply(SCO_OK,out,n,"Moving to "+label+" (game.relocation); arrival is reported when the game confirms it");
+}
+sco_result SaveSpot(const sco_arg*,uint32_t,void*,char* out,uint32_t n) {
+    Spot spot; const auto r=Capture(Open<sc_spatial_v1>(SC_SPATIAL_SERVICE_NAME),Open<sc_game_spatial_v1>(SC_GAME_SPATIAL_NAME),spot);
+    if (r!=SCO_OK) return Reply(r,out,n,"Cannot capture current full pose/complete ancestry; nothing saved");
+    const auto text=SpotText(spot);
+    const auto saved=g.store ? g.store.Put("spot",std::string_view(text)) : WriteFile(g.spawn,text);
+    if (saved!=SCO_OK) return Reply(saved,out,n,"Quick-save storage failed; prior spot retained");
+    g.saved=std::move(spot);
+    return Reply(SCO_OK,out,n,"Saved current spot (read-only capture; not moved)");
+}
+sco_result GoSaved(const sco_arg*,uint32_t,void*,char* out,uint32_t n) {
+    std::string why; if (Ready(why)!=SCO_OK) return Reply(SCO_UNAVAILABLE,out,n,why);
+    Restoration r; const auto found=Resolve(Open<sc_game_spatial_v1>(SC_GAME_SPATIAL_NAME),g.saved,r);
+    if (found!=SCO_OK) return Reply(found,out,n,"Saved spot unavailable (none saved, unloaded/expired metadata or root-only match); not moved");
+    return Move(r.pose,std::string(r.partial?"saved spot (partial, level ":"saved spot (exact, level ")+std::to_string(r.level)+")",out,n);
+}
+sco_result GoBookmark(const sco_arg* a,uint32_t count,void*,char* out,uint32_t n) {
+    std::string why; if (Ready(why)!=SCO_OK) return Reply(SCO_UNAVAILABLE,out,n,why);
+    if (count!=1 || !a || a[0].type!=SCO_ARG_STRING || !SafeName(a[0].v.s)) return Reply(SCO_BAD_ARG,out,n,"Bookmark name must be <=63 bytes, without separators/newlines");
+    const auto it=std::find_if(g.marks.begin(),g.marks.end(),[&](const auto& m){return Same(m.name,a[0].v.s);});
+    if (it==g.marks.end()) return Reply(SCO_NOT_FOUND,out,n,"No such bookmark");
+    const std::string name=it->name; Restoration r; const auto found=Resolve(Open<sc_game_spatial_v1>(SC_GAME_SPATIAL_NAME),it->spot,r);
+    if (found!=SCO_OK) return Reply(found,out,n,"Bookmark pose unavailable (unloaded/expired metadata or root-only match); not moved");
+    return Move(r.pose,"bookmark '"+name+"'",out,n);
+}
+sco_result TravelTo(const sco_arg* a,uint32_t count,void*,char* out,uint32_t n) {
+    std::string why; if (Ready(why)!=SCO_OK) return Reply(SCO_UNAVAILABLE,out,n,why);
+    if (count!=2 || !a || a[0].type!=SCO_ARG_STRING || !SafePlace(a[0].v.s) || a[1].type!=SCO_ARG_FLOAT || !std::isfinite(a[1].v.f) || a[1].v.f<100 || a[1].v.f>20000)
+        return Reply(SCO_BAD_ARG,out,n,"Usage: quantum.travel <destination> <altitude 100..20000 m>");
+    const auto it=std::find_if(g.places.begin(),g.places.end(),[&](const auto& p){return Same(p.name,a[0].v.s) || Same(p.entity,a[0].v.s);});
+    if (it==g.places.end()) return Reply(SCO_NOT_FOUND,out,n,"No such destination; check locations.txt or run quantum.scan");
+    const auto* sp=Open<sc_game_spatial_v1>(SC_GAME_SPATIAL_NAME); sc_game_zone z{}; z.size=sizeof(z);
+    if (!TRAVEL_FN(sp,sc_game_spatial_v1,find_zone) || !sp->find_zone(it->entity.c_str(),&z) || !RecordValid(z)) return Reply(SCO_UNAVAILABLE,out,n,"Destination zone '"+it->entity+"' is not loaded; not moved");
+    // Arrival: radius + altitude along the destination zone's +Z axis, identity rotation in that frame.
+    Pose target; target.zone=z.zone_id; target.pos[2]=it->radius+a[1].v.f;
+    return Move(target,it->name+" ("+std::to_string(static_cast<long long>(a[1].v.f))+" m)",out,n);
+}
 sco_result Status(const sco_arg*,uint32_t,void*,char* out,uint32_t n) {
-    return Reply(SCO_OK,out,n,std::string(id)+": "+std::to_string(g.marks.size())+" bookmarks, "+std::to_string(g.places.size())+" destinations; G2 REFUSE; system identity unknown unless explicitly provided; scan is observed ancestry only");
+    return Reply(SCO_OK,out,n,std::string(id)+": "+std::to_string(g.marks.size())+" bookmarks, "+std::to_string(g.places.size())+" destinations; moves "+
+        (MovesAllowed()?"allowed":"off in settings")+"; game.relocation "+(RelocationOn()?"on":"off")+"; "+(g.ticket?"moving to "+g.moving:std::string("no move in progress"))+
+        "; system identity unknown unless explicitly provided; scan is observed ancestry only");
 }
 sco_result ScanCommand(const sco_arg*,uint32_t,void*,char* out,uint32_t n) {
     std::vector<sc_game_zone> records; const auto r=Scan(Open<sc_game_spatial_v1>(SC_GAME_SPATIAL_NAME),records);
@@ -248,7 +338,22 @@ void PanelEvent(const char*,const sco_widget_event* event,void*) noexcept {
         case 3: if (event->kind==SCO_WIDGET_LIST && event->index>=0 && event->index<128) g.selected_mark=static_cast<int32_t>(g.mark_page*128)+event->index; break;
         case 4: if (event->kind==SCO_WIDGET_TEXT_INPUT && SafeName(event->text)) g.bookmark_name=event->text; break;
         case 5: if (event->kind==SCO_WIDGET_SLIDER && std::isfinite(event->value) && event->value>=100 && event->value<=20000) g.altitude=event->value; break;
-        case 6: if (event->kind==SCO_WIDGET_BUTTON) Refuse(nullptr,0,nullptr,reply,sizeof(reply)); break;
+        case 6: if (event->kind==SCO_WIDGET_BUTTON) {
+#ifdef TRAVEL_TELEPORT
+            GoSaved(nullptr,0,nullptr,reply,sizeof(reply));
+#else
+            if (g.selected_place>=0 && static_cast<size_t>(g.selected_place)<g.places.size()) {
+                const std::string place=g.places[g.selected_place].entity; sco_arg pick[2]{};
+                pick[0].type=SCO_ARG_STRING; pick[0].v.s=place.c_str(); pick[1].type=SCO_ARG_FLOAT; pick[1].v.f=g.altitude;
+                TravelTo(pick,2,nullptr,reply,sizeof(reply));
+            } else std::snprintf(reply,sizeof(reply),"Select a destination first");
+#endif
+            } break;
+        case 15: if (event->kind==SCO_WIDGET_BUTTON) {
+            if (g.selected_mark>=0 && static_cast<size_t>(g.selected_mark)<g.marks.size()) { const std::string stable=g.marks[g.selected_mark].name; name.v.s=stable.c_str(); GoBookmark(&name,1,nullptr,reply,sizeof(reply)); }
+            else std::snprintf(reply,sizeof(reply),"Select a bookmark first");
+            } break;
+        case 16: if (event->kind==SCO_WIDGET_BUTTON) SaveSpot(nullptr,0,nullptr,reply,sizeof(reply)); break;
         case 7: if (event->kind==SCO_WIDGET_BUTTON) ScanCommand(nullptr,0,nullptr,reply,sizeof(reply)); break;
         case 8: if (event->kind==SCO_WIDGET_BUTTON) { name.v.s=g.bookmark_name.c_str(); SaveBookmark(&name,1,nullptr,reply,sizeof(reply)); } break;
         case 9: if (event->kind==SCO_WIDGET_BUTTON && g.selected_mark>=0 && static_cast<size_t>(g.selected_mark)<g.marks.size()) { name.v.s=g.marks[g.selected_mark].name.c_str(); const std::string stable=name.v.s; name.v.s=stable.c_str(); DeleteBookmark(&name,1,nullptr,reply,sizeof(reply)); g.selected_mark=-1; } break;
@@ -284,7 +389,8 @@ void Panel() {
     for (const auto& text:places) place_items.push_back(text.c_str()); for (const auto& text:marks) mark_items.push_back(text.c_str());
     const auto status=g.last_status.substr(0,255); add(SCO_WIDGET_LABEL,1,status.c_str());
 #ifdef TRAVEL_TELEPORT
-    add(SCO_WIDGET_BUTTON,6,"F7/F8 unavailable: G2 REFUSE"); add(SCO_WIDGET_BUTTON,10,"Inspect saved pose (read-only)");
+    add(SCO_WIDGET_BUTTON,16,"Save current spot (F7, read-only capture)"); add(SCO_WIDGET_BUTTON,6,"Go to saved spot (F8, offline only)");
+    add(SCO_WIDGET_BUTTON,10,"Inspect saved pose (read-only)");
 #else
     auto& p=add(SCO_WIDGET_LIST,2,"Destinations (system / name; 128 per page)"); p.items=place_items.data(); p.item_count=static_cast<uint32_t>(place_items.size());
     if (g.selected_place>=static_cast<int32_t>(g.place_page*128) && static_cast<size_t>(g.selected_place)<g.place_page*128+places.size()) p.index=g.selected_place-static_cast<int32_t>(g.place_page*128);
@@ -293,8 +399,9 @@ void Panel() {
     if (g.selected_mark>=static_cast<int32_t>(g.mark_page*128) && static_cast<size_t>(g.selected_mark)<g.mark_page*128+marks.size()) m.index=g.selected_mark-static_cast<int32_t>(g.mark_page*128);
     add(SCO_WIDGET_BUTTON,13,"Previous bookmarks"); add(SCO_WIDGET_BUTTON,14,"Next bookmarks");
     add(SCO_WIDGET_TEXT_INPUT,4,"Bookmark name").text=g.bookmark_name.c_str();
-    auto& slider=add(SCO_WIDGET_SLIDER,5,"Arrival altitude (movement unavailable)"); slider.value=g.altitude; slider.minimum=100; slider.maximum=20000;
-    add(SCO_WIDGET_BUTTON,6,"Travel / go to bookmark unavailable: G2 REFUSE");
+    auto& slider=add(SCO_WIDGET_SLIDER,5,"Arrival altitude (metres above the destination radius)"); slider.value=g.altitude; slider.minimum=100; slider.maximum=20000;
+    add(SCO_WIDGET_BUTTON,6,"Travel to selected destination (offline only)");
+    add(SCO_WIDGET_BUTTON,15,"Go to selected bookmark (offline only)");
     add(SCO_WIDGET_BUTTON,7,"Scan observed zones (not a full system scan)");
     add(SCO_WIDGET_BUTTON,8,"Save current bookmark (read-only capture)");
     add(SCO_WIDGET_BUTTON,9,"Delete selected bookmark"); add(SCO_WIDGET_BUTTON,10,"Inspect selected bookmark (read-only)");
@@ -321,8 +428,13 @@ inline sco_result Load(const sco_api* api,sco_plugin* self) {
     g.api=api; g.self=self;
     try {
         g.root=Setting("data_root","data");
-        const char* inherited=std::getenv("SC_OFFLINE_SPAWN_FILE");
-        g.spawn=Setting("spawn_file",inherited && *inherited ? inherited : (g.root/"spawn.txt").string());
+        std::string inherited;
+#ifdef _MSC_VER
+        { char* v=nullptr; size_t n=0; if (_dupenv_s(&v,&n,"SC_OFFLINE_SPAWN_FILE")==0 && v) inherited=v; std::free(v); }
+#else
+        if (const char* v=std::getenv("SC_OFFLINE_SPAWN_FILE")) inherited=v;
+#endif
+        g.spawn=Setting("spawn_file",!inherited.empty() ? inherited : (g.root/"spawn.txt").string());
         Storage();
 #ifdef TRAVEL_TELEPORT
         const auto loaded=LoadSaved();
@@ -336,18 +448,18 @@ inline sco_result Load(const sco_api* api,sco_plugin* self) {
 #endif
         const sco_command commands[]={
 #ifdef TRAVEL_TELEPORT
-            {sizeof(sco_command),0,"teleport.save","Quick save unavailable","G2 consumer held in REFUSE mode",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<Refuse>,nullptr},
-            {sizeof(sco_command),0,"teleport.go","Relocation unavailable",refusal,nullptr,nullptr,0,sizeof(sco_arg_def),Guard<Refuse>,nullptr},
+            {sizeof(sco_command),0,"teleport.save","Quick save","Save where you are (read-only capture; F7)",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<SaveSpot>,nullptr},
+            {sizeof(sco_command),0,"teleport.go","Go to quick save","Move to the saved spot through game.relocation (offline only, same star system; F8)",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<GoSaved>,nullptr},
             {sizeof(sco_command),0,"teleport.inspect","Inspect saved pose","Read-only exact/partial restoration candidate",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<InspectBookmark>,nullptr},
-            {sizeof(sco_command),0,"teleport.status","Teleport state","Saved data retained; mutations unavailable",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<Status>,nullptr}
+            {sizeof(sco_command),0,"teleport.status","Teleport state","Saved spot, move switch and game.relocation state",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<Status>,nullptr}
 #else
-            {sizeof(sco_command),0,"quantum.travel","Relocation unavailable",refusal,nullptr,dest,2,sizeof(sco_arg_def),Guard<Refuse>,nullptr},
-            {sizeof(sco_command),0,"quantum.bookmark","Relocation unavailable",refusal,nullptr,&name,1,sizeof(sco_arg_def),Guard<Refuse>,nullptr},
+            {sizeof(sco_command),0,"quantum.travel","Travel","Move to a destination through game.relocation (offline only, same star system)",nullptr,dest,2,sizeof(sco_arg_def),Guard<TravelTo>,nullptr},
+            {sizeof(sco_command),0,"quantum.bookmark","Go to bookmark","Move to a bookmark through game.relocation (offline only, same star system)",nullptr,&name,1,sizeof(sco_arg_def),Guard<GoBookmark>,nullptr},
             {sizeof(sco_command),0,"quantum.save_bookmark","Save bookmark","Read-only full pose capture with bounded ancestry",nullptr,&name,1,sizeof(sco_arg_def),Guard<SaveBookmark>,nullptr},
             {sizeof(sco_command),0,"quantum.delete_bookmark","Delete bookmark","Retains legacy quantum DB schema",nullptr,&name,1,sizeof(sco_arg_def),Guard<DeleteBookmark>,nullptr},
             {sizeof(sco_command),0,"quantum.inspect_bookmark","Inspect bookmark","Read-only partial restoration candidate; no mutation",nullptr,&name,1,sizeof(sco_arg_def),Guard<InspectBookmark>,nullptr},
             {sizeof(sco_command),0,"quantum.scan","Observed zones","Bounded observation pages; not an exhaustive streamed-system scan",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<ScanCommand>,nullptr},
-            {sizeof(sco_command),0,"quantum.status","Travel state","Destination/bookmark counts and refusal status",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<Status>,nullptr}
+            {sizeof(sco_command),0,"quantum.status","Travel state","Destination/bookmark counts, move switch and game.relocation state",nullptr,nullptr,0,sizeof(sco_arg_def),Guard<Status>,nullptr}
 #endif
         };
         for (const auto& c:commands) { const auto r=api->register_command(self,&c); if (r!=SCO_OK) { g={}; return r; } }
@@ -374,7 +486,8 @@ inline void Unload() noexcept {
         const auto* ui=Open<sco_ui_v1>(SCO_UI_NAME);
         if (TRAVEL_FN(ui,sco_ui_v1,unbind_hotkey)) { ui->unbind_hotkey(g.self,"f7"); ui->unbind_hotkey(g.self,"f8"); }
     }
+    if (g.ticking && TRAVEL_FN(g.api,sco_api,unsubscribe)) g.api->unsubscribe(g.self,"tick",TravelTick);
     } catch (...) {}
-    g={}; // No subscription, worker, provider mutation or shutdown calls; host removes commands.
+    g={}; // game.relocation cancels and forgets this owner's tickets on unload; host removes commands.
 }
 }
