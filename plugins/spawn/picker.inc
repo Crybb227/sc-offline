@@ -65,10 +65,11 @@ void RenderPicker() {
         Node(SCO_WIDGET_BUTTON,13,"Cancel/remove selected ship"),Node(SCO_WIDGET_BUTTON,14,"Clear owned ships"),Node(SCO_WIDGET_BUTTON,15,"Refresh spawn status"),
         Node(SCO_WIDGET_TOGGLE,16,"Infinite ship ammo (creative plugin)"),Node(SCO_WIDGET_BUTTON,17,"Startup destination (unavailable)"),
         Node(SCO_WIDGET_LABEL,18,picker.catalog.status),Node(SCO_WIDGET_LABEL,19,page),Node(SCO_WIDGET_LABEL,20,picker.reply)};
-    nodes[0].text=picker.catalog.filter.c_str();nodes[1].items=picker.catalog.labels.data();nodes[1].item_count=static_cast<uint32_t>(picker.catalog.labels.size());nodes[1].index=-1;
+    nodes[0].text=picker.catalog.filter.c_str();nodes[1].items=picker.catalog.labels.empty()?nullptr:picker.catalog.labels.data();nodes[1].item_count=static_cast<uint32_t>(picker.catalog.labels.size());nodes[1].index=-1;
     nodes[2].text=picker.ship.c_str();nodes[3].value=picker.height;nodes[3].maximum=10000;
     nodes[4].text=picker.seat.c_str();nodes[5].value=picker.power?1:0;
-    nodes[10].items=titles;nodes[10].item_count=g.count;nodes[10].index=picker.owned;nodes[15].value=picker.ammo?1:0;
+    nodes[10].items=g.count?titles:nullptr; // sco.widgets rejects items without a count
+    nodes[10].item_count=g.count;nodes[10].index=picker.owned;nodes[15].value=picker.ammo?1:0;
     auto r=w->set_panel(g.self,"spawn.vehicles","Vehicles",nodes,20,sizeof(nodes[0]),PickerEvent,nullptr);
     if(r!=SCO_OK)g.api->log(g.self,SCO_LOG_WARN,"Vehicles panel refused; spawn commands remain available");
 }

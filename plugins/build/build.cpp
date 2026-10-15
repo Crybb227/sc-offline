@@ -199,7 +199,7 @@ sco_result Undo(const sco_arg*,uint32_t n,void*,char* out,uint32_t size) {
         const auto r=Remove(g.placed[i-1]);
         return Reply(r,out,size,r==SCO_OK?"Removal REQUESTED, not disappearance; receipt retained":"Owned removal refused; authority unchanged, no foreign fallback");
     }
-    return Reply(SCO_NOT_FOUND,out,size,"Nothing retained to undo");
+    return Reply(SCO_OK,out,size,"Nothing retained to undo");
 }
 sco_result Clear(const sco_arg*,uint32_t n,void*,char* out,uint32_t size) {
     if(n || (!out&&size))return SCO_BAD_ARG;

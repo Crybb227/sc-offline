@@ -8,6 +8,12 @@ Observed a second time by the maintainer, on a desktop session with the game run
 
 **NOT VERIFIED:** play beyond loading in; contracts on the v0.7.8.2 host engine (listing, accept, completion, rewards); every feature below.
 
+## v0.7.8.3 build plugin
+
+`data/plugins/build` ships enabled from v0.7.8.3. `tools/check_build_sdk.py` builds it against the published `sdk-v2.2.0` archive, checks its compiler dependencies and boundary negatives, and runs the SDK's `sco-plugin-check` with no game services: place, undo, clear and status answer, and the interactive commands (`build.toggle`/F6, `build.aim`, `build.drop`) refuse. That is a development-machine check, not a game run.
+
+**NOT VERIFIED:** the build plugin in game. Owed: `build.place` with a class and with a `.socpak` path actually grounding an object ahead of the player, `build.undo` and `build.clear` actually removing what was placed (and only that), the plugin loading from the release folder on Windows, unload removing placements, and F6 refusing cleanly. Interactive build mode and the free camera stay unavailable until a production G5 adapter exists; placements are not kept across reloads.
+
 ## Optional co-presence module
 
 Its source is maintained in [scubamount/sc-mp](https://github.com/scubamount/sc-mp);
@@ -44,8 +50,8 @@ SDK pin and 13 baseline + 2 optional feature inventory are unchanged.
 Crew and ordinary spawn ship as enabled external folders; their host registrations,
 linked UI and tick fallbacks are removed. Creative stays off; Discord stays off and
 refuses presence pending approved transport/privacy policy. The current host registry has two built-ins (contracts, mining); the release recipe
-stages six external native IDs (spawn, crew, npc, inspector, creative, discord).
-Teleport, quantum, build and loadout have external implementations not yet staged
+stages seven external native IDs (spawn, crew, build, npc, inspector, creative, discord).
+Teleport, quantum and loadout have external implementations not yet staged
 there, and multiplayer is unregistered at this revision: 13 baseline IDs remain.
 Two optional bridge modules and supporting data packs are counted separately.
 Older command fixtures used published SDK 2.0.0, not engine evidence.
