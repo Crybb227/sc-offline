@@ -27,6 +27,7 @@
 #include "sco/log.h"
 #include "sco/scan.h"
 #include "sco/signatures.h"
+#include "sco/hook.h"
 #ifdef SCO_OFFLINE_G1_HOST
 #include "offline_host.h"
 #include "admission_probe.h"
@@ -46,6 +47,62 @@
 #pragma comment(linker, "/export:DirectInput8Create=C:\\Windows\\System32\\dinput8.DirectInput8Create,@1")
 
 static const wchar_t* kTargetModule = L"StarCitizen.exe";
+
+// Startup gate. The offline patches must land before the game's own startup reaches its EAC
+// handshake (an unpatched game exits a fraction of a second after it starts). G1's Prepare may not
+// run under the loader lock, so it runs on ModThread; the game's main thread is held at the exe's
+// entry point until ModThread has finished StartOffline (admitted or refused), or kGateTimeoutMs.
+// The entry starts with a call rel32, which InstallDetour can't relocate, so the gate writes its own
+// 12-byte absolute jump and puts the original bytes back before the entry runs. Only the main thread
+// exists at the entry, so the restore can't race another thread.
+static HANDLE g_startupDone = nullptr;
+static uint8_t* g_entry = nullptr;
+static uint8_t g_entrySaved[12];
+static constexpr DWORD kGateTimeoutMs = 60000;
+
+static void ReleaseStartupGate() {
+    if (g_startupDone) SetEvent(g_startupDone);
+}
+
+extern "C" void StartupGateWait() {
+    const DWORD waited = WaitForSingleObject(g_startupDone, kGateTimeoutMs);
+    if (!sco::hook::WriteCode(g_entry, g_entrySaved, sizeof(g_entrySaved)))
+        TerminateProcess(GetCurrentProcess(), 0xC0DE0001);   // the entry would run our jump forever
+    if (waited != WAIT_OBJECT_0) Log("[!] startup gate: released after %lu ms without the mod finishing startup", kGateTimeoutMs);
+}
+
+static void InstallStartupGate() {
+    auto* base = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    wchar_t path[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (!base || !length || length >= MAX_PATH || _wcsicmp(PathFindFileNameW(path), kTargetModule) != 0) return;
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || !nt->OptionalHeader.AddressOfEntryPoint) return;
+    uint8_t* entry = base + nt->OptionalHeader.AddressOfEntryPoint;
+    uint8_t* stub = sco::hook::AllocateNear(entry, 64);
+    g_startupDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stub || !g_startupDone) return;
+    // push rcx; sub rsp,0x20; mov rax,StartupGateWait; call rax; add rsp,0x20; pop rcx; mov rax,entry; jmp rax
+    // (rsp is 8 mod 16 at the entry; push makes it 16-aligned for the call; rcx carries the PEB argument.)
+    const uint64_t waitFn = reinterpret_cast<uint64_t>(&StartupGateWait), entryAddr = reinterpret_cast<uint64_t>(entry);
+    uint8_t code[36] = { 0x51, 0x48, 0x83, 0xEC, 0x20, 0x48, 0xB8 };
+    std::memcpy(code + 7, &waitFn, 8);
+    const uint8_t mid[] = { 0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x20, 0x59, 0x48, 0xB8 };
+    std::memcpy(code + 15, mid, sizeof(mid));
+    std::memcpy(code + 24, &entryAddr, 8);
+    code[32] = 0xFF; code[33] = 0xE0;
+    std::memcpy(stub, code, 34);
+    FlushInstructionCache(GetCurrentProcess(), stub, 34);
+    uint8_t jump[12] = { 0x48, 0xB8 };   // mov rax, stub; jmp rax
+    const uint64_t stubAddr = reinterpret_cast<uint64_t>(stub);
+    std::memcpy(jump + 2, &stubAddr, 8);
+    jump[10] = 0xFF; jump[11] = 0xE0;
+    std::memcpy(g_entrySaved, entry, sizeof(g_entrySaved));
+    g_entry = entry;
+    if (!sco::hook::WriteCode(entry, jump, sizeof(jump))) { g_entry = nullptr; CloseHandle(g_startupDone); g_startupDone = nullptr; }
+}
 
 // Read-only anti-cheat inspection; no service/process/module state is modified.
 // Unknown is a refusal, including access-denied, partial enumeration and query errors.
@@ -520,6 +577,7 @@ static DWORD WINAPI ModThread(LPVOID param) {
             for (;;) Sleep(1000);
         }
         Log("[!] Launch Star Citizen offline with no EAC, then load this. Unloading in 5s.");
+        ReleaseStartupGate();
         Sleep(5000);
         FreeLibraryAndExitThread(self, 0);
     }
@@ -531,6 +589,7 @@ static DWORD WINAPI ModThread(LPVOID param) {
 
     ReadStartOptions();
     StartOffline();
+    ReleaseStartupGate();
     LogStartup();
     RunMainThreadService();
 
@@ -545,7 +604,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hModule);
         InitLog();
         sco::SetLogSink(ForwardCoreLog);
-        CreateThread(nullptr, 0, ModThread, hModule, 0, nullptr);
+        InstallStartupGate();
+        if (!CreateThread(nullptr, 0, ModThread, hModule, 0, nullptr)) ReleaseStartupGate();
     }
     return TRUE;
 }
