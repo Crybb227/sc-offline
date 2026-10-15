@@ -4,7 +4,9 @@
 
 Observed once, on one Windows test PC (game 4.10.196.36804, launched through `sc-offline.exe play` with the game running as administrator): `[g1] evidence: session=Offline officialNetwork=Clear antiCheat=Clear target=Clear`, then every offline patch line as in v0.7.7 (including `offline-force (IsOnline = 0): patched` and `local handshake (accept frontend connection): patched`), `[core] signatures: 316/316 OK`, the game quit hook installed, and `bOnline[0]` in `Game.log`. That session had no desktop, so the game did not render or reach the menu.
 
-**NOT VERIFIED:** the firewall read from a game running with normal rights (the usual case; if Windows denies it, the evidence line shows `Unknown` and startup refuses); reaching the menu and playing; contracts (expected to refuse until the SDK publishes its providers); every feature below.
+Observed a second time by the maintainer, on a desktop session with the game running with **normal rights** (v0.7.8.1 release DLL, sha256 `47e89459...`): the same evidence line (`profiles=6 rules=734`), every offline patch, `[core] signatures: 316/316 OK`, eight plugins loaded, and `Game.log` reaching `Requesting game mode PU_All/SC_Default` and `Loading level megamap` with `bOnline[0]`. So the firewall read works without administrator rights on that PC.
+
+**NOT VERIFIED:** play beyond loading in; contracts on the v0.7.8.2 host engine (listing, accept, completion, rewards); every feature below.
 
 ## Optional co-presence module
 

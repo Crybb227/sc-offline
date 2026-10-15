@@ -35,6 +35,7 @@
 #include <cstdio>
 #endif
 #include "sco/runtime.h"
+#include <sc_game_events.h>
 #include "sco_lua.h"
 #include "sco_lua_game.h"   // sco.datacore, sco.game.* and the game.* payloads for Lua scripts
 #include <filesystem>
@@ -453,12 +454,26 @@ static void StopAsopBeforeProviders(const char*, const void*, void*) {
 }
 #endif
 
+// Contracts run on the retained host engine (contracts.cpp), as the v0.7.7 built-in did, until a
+// published missions/economy provider lets the external plugin take over. Its mission accounting
+// needs every actor death.
+static const char kContractsOwner = 0;
+static void OnContractActorDied(const char*, const void* data, void*) {
+    const auto* d = static_cast<const sc_game_actor_died*>(data);
+    if (d && d->size >= sizeof(*d)) RecordContractDeath(d->entity_id);
+}
+
 static void StartHostKit() {
 #ifdef SCO_OFFLINE_G1_HOST
     InvalidateEvidence(); // Start re-inspects: no positive reading carried over from Prepare
     const sco::Result result = offline_host::Start();
     g_hostKitStarted = result == sco::Result::Ok;
     if (!g_hostKitStarted) Log("[app] start refused: %s", sco::ResultName(result));
+    if (g_hostKitStarted) {
+        const auto deaths = sco::Subscribe(&kContractsOwner, SC_GAME_EVENT_ACTOR_DIED, OnContractActorDied, nullptr);
+        if (deaths != sco::Result::Ok)
+            Log("[contracts] actor-death subscription refused: %s; kill objectives may not complete", sco::ResultName(deaths));
+    }
 #ifdef SCO_ASOP_HOST_COMPOSITION
     if (g_hostKitStarted) {
         // G1 owns engine quit and admission-loss teardown. Its app::Stop dispatches
@@ -477,12 +492,14 @@ static void StartHostKit() {
 #endif
 }
 
-// Retained legacy consumers pending their own game-pack migrations. Never
-// revive failed/disabled external features or built-in subscription work here.
+// Retained legacy consumers pending their own game-pack migrations. Contracts is the one retained
+// engine ticked here on purpose (maintainer decision, v0.7.8.2); never revive other
+// failed/disabled external features here.
 static void RunLegacyTicks(DWORD now) {
     ProcessNpcs(); // unrelated legacy callers; external NPC owns its public requests
     ProcessCVars();
     ProcessMissions();
+    ProcessContracts(); // mobiGlas listing, running missions, rewards; wallet in wallet.txt
     // Build, quantum, teleport and loadout are external; no fallback ticks.
 #ifndef SCO_ASOP_HOST_COMPOSITION
     ProcessFleet(now);
