@@ -281,7 +281,7 @@ What runs is a local recreation: ships, NPCs, contracts and build mode run on th
 
 Two additions go beyond one offline game, and neither uses or changes the game's own netcode or servers:
 
-- **Private co-presence** (the Multiplayer tab, on sco-core's `sco.net`): friends who also run sc-offline play alongside each other, peer to peer between sc-offline clients only, over a LAN or a VPN you set up yourself (Tailscale, ZeroTier). Each player still runs their own offline game; peers exchange their own authenticated messages (poses, spawn announcements), and other players show up as "ghost" entities your game spawns. Nothing connects until you press Host or Join ([limits](docs/features.md#multiplayer-lan-or-vpn)).
+- **Private co-presence**: an optional module, maintained separately in [scubamount/sc-mp](https://github.com/scubamount/sc-mp) and not part of the release.
 - **Bridges to other games** on the same PC, over local shared memory, for example Titanfall 2 (through Northstar) or a Minecraft-style voxel game. Optional builds only, **not in the release** ([docs/bridges.md](docs/bridges.md)).
 
 sc-offline never runs with Easy Anti-Cheat active: while you play, the launcher renames `EasyAntiCheat_EOS.exe` and blocks the EAC download host ([what the launcher changes](#2-what-the-launcher-changes)). Online play, cheating, getting around anti-cheat and the rest of the bans in [CONTRIBUTING](CONTRIBUTING.md#what-fits-this-project) stay out for good.

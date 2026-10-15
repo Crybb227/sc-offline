@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The optional co-presence module's source now lives in its own repository, [scubamount/sc-mp](https://github.com/scubamount/sc-mp). sc-offline no longer builds it; releases since 0.7.8 have not included it, so nothing you download changes.
+
 ## 0.7.8.1 (2026-10-15)
 
 - **The game starts again ([#134](https://github.com/scubamount/sc-offline/issues/134)).** v0.7.8 refused its own offline startup on every PC: `mod.log` showed `[app] offline admission/prepare refused: BAD_ARG`, no offline patch ran, the game closed about a quarter second after it opened, and the launcher then took the mod out again. Two causes, both fixed. The host handed sco-core's offline startup a built-in plugin it no longer accepts, and the mod could not show that the game was offline, so startup was refused. Behind that, startup had moved off the game's loading path, so the game ran ahead of the mod and closed before the offline patches landed.
