@@ -87,12 +87,6 @@ if(SCO_ADDITIONAL_FEATURES)
   add_subdirectory(quantum)
   add_subdirectory(teleport)
   add_subdirectory(build)
-  # Default enabled when the SDK has G13 (pinned sdk-v2.2.0 does; 2.0.0 did not).
-  if(EXISTS "${SCO_SDK_INCLUDE_DIR}/sc_private_session.h")
-    add_subdirectory(multiplayer)
-  else()
-    message(STATUS "multiplayer unavailable: SDK pin lacks G13; no built-in fallback")
-  endif()
   # Pinned sdk-v2.2.0 ships sc_mining.h (2.0.0 did not); host builds still opt in explicitly.
   option(SCO_MINING_FEATURE "Build external mining (requires newer game SDK)" OFF)
   if(SCO_MINING_FEATURE)
@@ -123,7 +117,7 @@ option(SCO_CONTRACTS_FEATURE "Build command-first contracts consumer" ON)
 if(SCO_CONTRACTS_FEATURE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/contracts/CMakeLists.txt")
   # Proof trees configure this directory with a subset of the feature folders (check_npc_sdk.py,
   # check_inspector_sdk.py); an absent consumer is not a configure error, the way multiplayer's
-  # missing SDK header isn't.
+  # missing optional folder isn't.
   add_subdirectory(contracts)
 endif()
 if(SCO_WORKFLOW_TESTS)

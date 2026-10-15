@@ -6,20 +6,14 @@ Observed once, on one Windows test PC (game 4.10.196.36804, launched through `sc
 
 **NOT VERIFIED:** the firewall read from a game running with normal rights (the usual case; if Windows denies it, the evidence line shows `Unknown` and startup refuses); reaching the menu and playing; contracts (expected to refuse until the SDK publishes its providers); every feature below.
 
-## G13 external multiplayer (R1)
+## Optional co-presence module
 
-`plugins/multiplayer` has an enabled independent install, no built-in fallback,
-and preserves Host/Join UI, command IDs and the multiplayer database owner/keys.
-The neutral host renders retained widget panels on its game-thread frame handoff.
-Socket control stays in the default-on G13 broker: no socket at load, loopback
-by default, authenticated join and positive offline/EAC/network admission. G2
-goto refuses. See [multiplayer](../plugins/multiplayer/README.md).
+Its source is maintained in [scubamount/sc-mp](https://github.com/scubamount/sc-mp);
+sc-offline does not build or ship it.
 
-The targeted actual-module fixture passed with synthetic public providers;
-core separately exercised its real broker/backend through synthetic transport.
-The pinned published SDK 2.2.0 ships these contracts; 2.0.0 did not. CI release-job staging,
-Windows/MSVC, real renderer/input, live admission, private LAN and gameplay are
-**NOT VERIFIED**. Since v0.7.8.1 the shell reports offline-session and network
+## Admission evidence
+
+Since v0.7.8.1 the shell reports offline-session and network
 evidence from live firewall and connection reads (see above); it still never infers
 safety from flags or patch success.
 
