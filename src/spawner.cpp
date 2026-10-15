@@ -170,8 +170,6 @@ static MenuShip      g_menuShips[kMaxMenuShips];
 static volatile LONG g_menuShipCount = -1;
 static volatile LONG g_menuWantShips = 0;
 static SRWLOCK       g_menuLock = SRWLOCK_INIT;
-// The status strip's text until a feature or a plugin sets one (sco::Status).
-static const char    kMenuStatusDefault[] = "Pick a ship and press Spawn.";
 static struct { bool pending; int index; MenuSpawnOptions opt; } g_spawnRequest;
 static struct { bool pending; bool enemyWing; char cls[64]; float height; bool sit; bool flightReady; } g_classRequest;
 
@@ -227,7 +225,8 @@ void Menu_RequestSpawn(int index, const MenuSpawnOptions& options) {
 }
 
 void Menu_GetStatus(char* out, size_t n) {
-    if (!sco::GetStatus(out, n)) strncpy_s(out, n, kMenuStatusDefault, _TRUNCATE);
+    // No status line until a feature or a plugin sets one (sco::Status).
+    if (!sco::GetStatus(out, n) && n) out[0] = '\0';
 }
 
 static uintptr_t ClassRegistry() { return VCall<uintptr_t>(*g_tp.entitySystem, actors::kEsClassRegistry); }

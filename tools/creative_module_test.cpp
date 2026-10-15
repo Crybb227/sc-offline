@@ -3,12 +3,14 @@
 #include "workflow_module.h"
 #include "sc_creative.h"
 #include "sco_settings.h"
+#include "sco_widgets.h"
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace {
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
@@ -31,8 +33,63 @@ sco_result Register(sco_plugin* self, const sco_command* cmd) {
     CHECK(self == owner && cmd->size == sizeof(*cmd) && cmd->fn);
     commands.emplace(cmd->name, *cmd); return register_result;
 }
+// Synthetic sco.widgets 1.0. set_panel re-checks the node rules of sco-core's
+// src/widgets/widgets.cpp (OwnId, CheckArray, CopyNode) for a flat panel; it is a
+// mirror of those rules, not the host implementation or its ImGui renderer.
+struct PanelNode { uint32_t kind, id; double value, minimum, maximum; std::string label; };
+const sco_widgets_v1* widgets = nullptr;
+sco_result panel_result = SCO_OK;
+int panel_sets = 0, panel_rejects = 0, panel_removes = 0;
+bool panel_live = false;
+std::string panel_id, panel_title;
+std::vector<PanelNode> panel;
+sco_widget_event_fn panel_fn = nullptr;
+void* panel_ctx = nullptr;
+bool NodeOk(const sco_widget_node& n) {
+    if (n.size != sizeof(n) || n.kind < SCO_WIDGET_LABEL || n.kind > SCO_WIDGET_COLUMN || !n.id || n.parent || n.flags) return false;
+    if (!std::isfinite(n.value) || !std::isfinite(n.minimum) || !std::isfinite(n.maximum)) return false;
+    const bool numeric = n.kind == SCO_WIDGET_TOGGLE || n.kind == SCO_WIDGET_SLIDER;
+    const bool selection = n.kind == SCO_WIDGET_COMBO || n.kind == SCO_WIDGET_LIST;
+    const bool items = selection || n.kind == SCO_WIDGET_TABLE;
+    if ((!numeric && n.value != 0) || (n.kind != SCO_WIDGET_SLIDER && (n.minimum != 0 || n.maximum != 0)) ||
+        (!selection && n.index != 0 && n.index != -1) || (n.kind != SCO_WIDGET_TEXT_INPUT && n.text) ||
+        (!items && (n.items || n.item_count)) || (n.kind != SCO_WIDGET_TABLE && n.columns)) return false;
+    if (n.kind == SCO_WIDGET_TOGGLE && n.value != 0 && n.value != 1) return false;
+    if (n.kind == SCO_WIDGET_SLIDER && (n.minimum > n.maximum || n.value < n.minimum || n.value > n.maximum)) return false;
+    if ((n.item_count && !n.items) || (!n.item_count && n.items)) return false;
+    if (n.label && std::strlen(n.label) > SCO_WIDGETS_MAX_TEXT) return false;
+    if (n.kind >= SCO_WIDGET_BUTTON && n.kind <= SCO_WIDGET_TEXT_INPUT && (!n.label || !*n.label)) return false;
+    return true;
+}
+sco_result SetPanel(sco_plugin* self, const char* id, const char* title, const sco_widget_node* nodes,
+                    uint32_t count, uint32_t stride, sco_widget_event_fn fn, void* ctx) {
+    CHECK(self == owner); ++panel_sets;
+    if (panel_result != SCO_OK) return panel_result;
+    const std::string key = id ? id : "";
+    bool ok = key.rfind("creative.", 0) == 0 && key.size() > 9 && key.size() <= SCO_WIDGETS_MAX_ID &&
+              key.back() != '.' && key.find("..") == std::string::npos;
+    for (char c : key) ok = ok && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.');
+    ok = ok && title && *title && std::strlen(title) <= SCO_WIDGETS_MAX_TITLE && nodes && count &&
+         count <= SCO_WIDGETS_MAX_NODES && stride >= sizeof(sco_widget_node) && stride % alignof(sco_widget_node) == 0;
+    std::vector<PanelNode> copied;
+    for (uint32_t i = 0; ok && i < count; ++i) {
+        const auto& n = *reinterpret_cast<const sco_widget_node*>(reinterpret_cast<const char*>(nodes) + size_t{i} * stride);
+        ok = NodeOk(n);
+        for (const auto& prior : copied) ok = ok && prior.id != n.id;
+        if (ok) copied.push_back({n.kind, n.id, n.value, n.minimum, n.maximum, n.label ? n.label : ""});
+    }
+    if (!ok) { ++panel_rejects; return SCO_BAD_ARG; }
+    panel_id = key; panel_title = title; panel = std::move(copied); panel_fn = fn; panel_ctx = ctx; panel_live = true;
+    return SCO_OK;
+}
+sco_result RemovePanel(sco_plugin* self, const char* id) {
+    CHECK(self == owner); ++panel_removes;
+    if (!panel_live || !id || panel_id != id) return SCO_NOT_FOUND;
+    panel_live = false; panel_fn = nullptr; panel_ctx = nullptr; return SCO_OK;
+}
 sco_result Query(const char* name, uint32_t version, const void** out) {
     CHECK(version == 0x00010000u);
+    if (std::strcmp(name, SCO_WIDGETS_NAME) == 0) { *out = widgets; return widgets ? SCO_OK : SCO_NOT_FOUND; }
     *out = std::strcmp(name, SC_CREATIVE_SERVICE_NAME) == 0 ? static_cast<const void*>(creative)
                                                          : static_cast<const void*>(settings);
     // Deliberately leave a pointer on failure: the consumer must trust the result, not stale data.
@@ -254,6 +311,80 @@ void ServiceBoundaries() {
     provider_result = SCO_OK; Unload(); creative = nullptr;
     std::puts("creative service extents/null/reopen/capability/refusal: PASS");
 }
+double PanelValue(uint32_t id) {
+    for (const auto& n : panel) if (n.id == id) return n.value;
+    std::fprintf(stderr, "FAIL: no panel node %u\n", static_cast<unsigned>(id)); std::exit(1);
+}
+const std::string& PanelStatus() { CHECK(panel.size() == 6 && panel[5].id == 6); return panel[5].label; }
+void Fire(uint32_t id, uint32_t kind, double value, const char* panel_name = "creative.panel") {
+    CHECK(panel_live && panel_fn);
+    sco_widget_event e{}; e.size = sizeof(e); e.node_id = id; e.kind = kind; e.value = value;
+    panel_fn(panel_name, &e, panel_ctx);
+}
+void PanelWorkflow() {
+    auto a = Api(); auto full = Full(); creative = &full;
+    sco_widgets_v1 w{}; w.size = sizeof(w); w.set_panel = SetPanel; w.remove_panel = RemovePanel; widgets = &w;
+    sco_settings_v1 st{}; st.size = sizeof(st); st.get_float = GetFloat; settings = &st;
+    configured_speed = 12; setting_result = SCO_OK; flags = SC_CREATIVE_GOD_MODE; owners.clear(); speed = 23;
+    panel_sets = panel_rejects = panel_removes = 0;
+    CHECK(test_module::Load(&a, owner) == SCO_OK); CHECK(commands.size() == 6);
+    CHECK(panel_live && panel_sets == 1 && panel_rejects == 0);
+    CHECK(panel_id == "creative.panel" && panel_title == "Creative" && panel.size() == 6);
+    const char* labels[] = {"God mode", "Noclip", "Infinite ammo", "Infinite ship ammo", "Noclip speed (metres per second)", ""};
+    const uint32_t kinds[] = {SCO_WIDGET_TOGGLE, SCO_WIDGET_TOGGLE, SCO_WIDGET_TOGGLE, SCO_WIDGET_TOGGLE, SCO_WIDGET_SLIDER, SCO_WIDGET_LABEL};
+    for (uint32_t i = 0; i < 6; ++i) CHECK(panel[i].id == i + 1 && panel[i].kind == kinds[i] && panel[i].label == labels[i]);
+    CHECK(PanelValue(1) == 1 && PanelValue(2) == 0 && PanelValue(3) == 0 && PanelValue(4) == 0);
+    CHECK(PanelValue(5) == 12 && panel[4].minimum == 1 && panel[4].maximum == SC_CREATIVE_FLY_SPEED_MAX);
+    CHECK(speed == 23); // Rendering at load switches nothing on.
+    // Noclip goes through the command's setter: the configured speed first, then the true state re-rendered.
+    configured_speed = 15;
+    Fire(2, SCO_WIDGET_TOGGLE, 1);
+    CHECK((flags & SC_CREATIVE_FLY) && speed == 15 && PanelValue(2) == 1 && PanelValue(5) == 15 && PanelStatus() == "Noclip on");
+    Fire(3, SCO_WIDGET_TOGGLE, 1); Fire(4, SCO_WIDGET_TOGGLE, 1);
+    CHECK(flags == (SC_CREATIVE_GOD_MODE | SC_CREATIVE_FLY | SC_CREATIVE_INFINITE_AMMO | SC_CREATIVE_INFINITE_SHIP_AMMO));
+    CHECK(PanelValue(3) == 1 && PanelValue(4) == 1 && PanelStatus() == "Infinite ship ammo on");
+    // A refused toggle snaps back to the provider's state and shows the reason.
+    denied = "game.creative.god_mode";
+    Fire(1, SCO_WIDGET_TOGGLE, 0);
+    CHECK((flags & SC_CREATIVE_GOD_MODE) && PanelValue(1) == 1 && PanelStatus() == "God mode off failed: synthetic refusal");
+    denied = nullptr;
+    Fire(1, SCO_WIDGET_TOGGLE, 0);
+    CHECK(!(flags & SC_CREATIVE_GOD_MODE) && PanelValue(1) == 0 && PanelStatus() == "God mode off");
+    Fire(5, SCO_WIDGET_SLIDER, 40);
+    CHECK(speed == 40 && PanelValue(5) == 40 && PanelStatus() == "Noclip speed 40");
+    denied = "game.creative.fly";
+    Fire(5, SCO_WIDGET_SLIDER, 80);
+    CHECK(speed == 40 && PanelValue(5) == 40 && PanelStatus() == "Noclip speed failed: synthetic refusal");
+    denied = nullptr;
+    // Events for another panel, unknown nodes, mismatched kinds or out-of-range values change nothing.
+    const int sets = panel_sets, before = calls;
+    Fire(1, SCO_WIDGET_TOGGLE, 1, "creative.other"); Fire(9, SCO_WIDGET_TOGGLE, 1); Fire(1, SCO_WIDGET_TOGGLE, 2);
+    Fire(5, SCO_WIDGET_SLIDER, 0); Fire(5, SCO_WIDGET_SLIDER, 10001); Fire(1, SCO_WIDGET_SLIDER, 1); Fire(6, SCO_WIDGET_LABEL, 0);
+    CHECK(panel_sets == sets && calls == before && panel_rejects == 0);
+    Unload(); CHECK(!panel_live && panel_removes == 1);
+    // A refused panel or a missing/truncated renderer never fails the load; the commands stay.
+    panel_result = SCO_BAD_ARG;
+    CHECK(test_module::Load(&a, owner) == SCO_OK); CHECK(commands.size() == 6 && !panel_live);
+    Unload(); CHECK(panel_removes == 1);
+    panel_result = SCO_OK;
+    for (int i = 0; i < 2; ++i) {
+        if (i == 0) w.size = static_cast<uint32_t>(offsetof(sco_widgets_v1, remove_panel));
+        else { w.size = sizeof(w); w.remove_panel = nullptr; }
+        const int prior_sets = panel_sets;
+        CHECK(test_module::Load(&a, owner) == SCO_OK); CHECK(commands.size() == 6 && panel_sets == prior_sets && !panel_live);
+        Unload();
+    }
+    w.remove_panel = RemovePanel;
+    // State failure renders every toggle off; an unreadable setting starts the slider at 10.
+    provider_result = SCO_FAILED; setting_result = SCO_FAILED; flags = SC_CREATIVE_GOD_MODE;
+    CHECK(test_module::Load(&a, owner) == SCO_OK);
+    CHECK(panel_live && panel_rejects == 0 && PanelValue(1) == 0 && PanelValue(5) == 10);
+    provider_result = SCO_OK; setting_result = SCO_OK;
+    Unload(); CHECK(!panel_live);
+    widgets = nullptr; settings = nullptr; creative = nullptr; flags = 0; owners.clear();
+    speed = 23; speed_owner = nullptr; configured_speed = 12;
+    std::puts("creative panel: PASS (synthetic sco.widgets mirroring widgets.cpp node rules; not rendered in game)");
+}
 }
 int main(int argc, char** argv) {
     test_module::Open(argc, argv);
@@ -264,6 +395,7 @@ int main(int argc, char** argv) {
     RejectsInvalidInputs();
     SettingsAndLifecycle();
     RejectsHostTablesAndFailedLoad();
+    PanelWorkflow();
     test_module::Close();
     test_module::Open(argc, argv); // Physical module close/reopen, not a linked-in forwarding fixture.
     auto api = Api();

@@ -5,7 +5,9 @@
 // nothing the SDK does not offer any other plugin.
 //
 // The commands are the old cheats' controls: creative.god, creative.noclip, creative.noclip_speed,
-// creative.ammo, creative.ship_ammo and creative.status. A toggle this plugin switches on goes off
+// creative.ammo, creative.ship_ammo and creative.status. The same controls also appear as the menu's
+// Creative tab: a sco.widgets 1.0 panel registered after the commands, skipped with a warning when no
+// renderer is present, so the commands never depend on it. A toggle this plugin switches on goes off
 // when the plugin unloads (the game pack's release hook), so unloading it is the off switch for
 // everything it did. The folder ships with a `disabled` file: turn the plugin on from the launcher's
 // Plugins page.
@@ -13,9 +15,12 @@
 #include "scosdk/scosdk.hpp"
 #include "sc_creative.h"
 #include "sco_settings.h"
+#include "sco_widgets.h"
 
 #include <cstdint>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -69,6 +74,20 @@ public:
     }
     sco_result State(uint32_t& flags) const noexcept {
         CREATIVE_MEMBER(state, static_cast<const char*>(nullptr)); return t->state(plugin_->Self(), &flags);
+    }
+    // The panel's starting slider value: the noclip_speed setting when it is readable and valid.
+    bool ConfiguredSpeed(double& out) const noexcept {
+        const void* table = nullptr;
+        if (!plugin_ || plugin_->Api()->query_service(SCO_SETTINGS_NAME, SCO_SETTINGS_VERSION_1_0, &table) != SCO_OK
+            || !table) return false;
+        const auto* st = static_cast<const sco_settings_v1*>(table);
+        if (!sco::sdk::Covers(st->size, offsetof(sco_settings_v1, get_float), sizeof(st->get_float)) || !st->get_float)
+            return false;
+        double speed = 0;
+        if (st->get_float(plugin_->Self(), "noclip_speed", &speed) != SCO_OK || !std::isfinite(speed)
+            || speed < 1 || speed > SC_CREATIVE_FLY_SPEED_MAX) return false;
+        out = speed;
+        return true;
     }
     sco_result LastError(char (&out)[256]) const noexcept {
         out[0] = '\0';
@@ -133,7 +152,14 @@ public:
                         return SCO_OK;
                     })
                     .Register();
+        if (r == SCO_OK) StartPanel();
         return r;
+    }
+
+    void OnUnload() override {
+        if (!panel_) return;
+        if (const auto* w = Widgets()) (void)w->remove_panel(Self(), kPanelId);
+        panel_ = false;
     }
 
 private:
@@ -171,7 +197,110 @@ private:
             .Register();
     }
 
+    // ---- the Creative tab: a sco.widgets 1.0 panel over the same CreativeService setters ----
+    static constexpr char kPanelId[] = "creative.panel";
+    enum : uint32_t { kGod = 1, kNoclip, kAmmo, kShipAmmo, kSpeed, kStatus };
+
+    const sco_widgets_v1* Widgets() const noexcept {
+        const void* table = nullptr;
+        if (Api()->query_service(SCO_WIDGETS_NAME, SCO_WIDGETS_VERSION_1_0, &table) != SCO_OK || !table) return nullptr;
+        const auto* w = static_cast<const sco_widgets_v1*>(table);
+        if (!sco::sdk::Covers(w->size, offsetof(sco_widgets_v1, remove_panel), sizeof(w->remove_panel))
+            || !w->set_panel || !w->remove_panel) return nullptr;
+        return w;
+    }
+
+    // A missing renderer or a refused panel never fails the load: the commands stay available.
+    void StartPanel() noexcept {
+        if (!Widgets()) { Warn("Creative tab not shown (no sco.widgets); creative commands remain available"); return; }
+        double configured = 0;
+        speed_ = cr_.ConfiguredSpeed(configured) ? configured : 10;
+        status_[0] = '\0';
+        if (!RenderPanel()) Warn("Creative panel refused; creative commands remain available");
+    }
+
+    static sco_widget_node MakeNode(uint32_t kind, uint32_t id, const char* label) noexcept {
+        sco_widget_node n{};
+        n.size = sizeof(n); n.kind = kind; n.id = id; n.label = label;
+        return n;
+    }
+
+    // Toggles always show the provider's state, so a refused toggle snaps back; 0 when state fails.
+    bool RenderPanel() noexcept {
+        const auto* w = Widgets();
+        if (!w) return false;
+        uint32_t flags = 0;
+        if (cr_.State(flags) != SCO_OK) flags = 0;
+        sco_widget_node nodes[] = {
+            MakeNode(SCO_WIDGET_TOGGLE, kGod, "God mode"),
+            MakeNode(SCO_WIDGET_TOGGLE, kNoclip, "Noclip"),
+            MakeNode(SCO_WIDGET_TOGGLE, kAmmo, "Infinite ammo"),
+            MakeNode(SCO_WIDGET_TOGGLE, kShipAmmo, "Infinite ship ammo"),
+            MakeNode(SCO_WIDGET_SLIDER, kSpeed, "Noclip speed (metres per second)"),
+            MakeNode(SCO_WIDGET_LABEL, kStatus, status_)};
+        nodes[0].value = (flags & SC_CREATIVE_GOD_MODE) ? 1 : 0;
+        nodes[1].value = (flags & SC_CREATIVE_FLY) ? 1 : 0;
+        nodes[2].value = (flags & SC_CREATIVE_INFINITE_AMMO) ? 1 : 0;
+        nodes[3].value = (flags & SC_CREATIVE_INFINITE_SHIP_AMMO) ? 1 : 0;
+        nodes[4].value = speed_; nodes[4].minimum = 1; nodes[4].maximum = SC_CREATIVE_FLY_SPEED_MAX;
+        const sco_result r = w->set_panel(Self(), kPanelId, "Creative", nodes,
+                                          static_cast<uint32_t>(sizeof(nodes) / sizeof(nodes[0])),
+                                          static_cast<uint32_t>(sizeof(nodes[0])), PanelEvent, this);
+        if (r == SCO_OK) panel_ = true;
+        return r == SCO_OK;
+    }
+
+    static void PanelEvent(const char* panel, const sco_widget_event* e, void* ctx) {
+        if (!ctx || !panel || std::strcmp(panel, kPanelId) || !e || e->size < sizeof(*e)) return;
+        static_cast<Creative*>(ctx)->OnPanelEvent(*e);
+    }
+
+    // Same reason text as a refused command: the game pack's own reason, when it left one.
+    void Refused(const char* what) noexcept {
+        char why[256] = {};
+        cr_.LastError(why);
+        std::snprintf(status_, sizeof(status_), "%s failed: %s", what, why[0] ? why : "see mod.log");
+    }
+
+    void OnPanelEvent(const sco_widget_event& e) noexcept {
+        if (e.kind == SCO_WIDGET_TOGGLE && (e.value == 0 || e.value == 1)) {
+            const char* label = nullptr;
+            SetFn set = nullptr;
+            switch (e.node_id) {
+                case kGod: label = "God mode"; set = &CreativeService::SetGodMode; break;
+                case kNoclip: label = "Noclip"; set = &CreativeService::SetFlyMode; break;
+                case kAmmo: label = "Infinite ammo"; set = &CreativeService::SetInfiniteAmmo; break;
+                case kShipAmmo: label = "Infinite ship ammo"; set = &CreativeService::SetInfiniteShipAmmo; break;
+                default: return;
+            }
+            const bool on = e.value == 1;
+            char what[64];
+            std::snprintf(what, sizeof(what), "%s %s", label, on ? "on" : "off");
+            if ((cr_.*set)(on) == SCO_OK) {
+                std::snprintf(status_, sizeof(status_), "%s", what);
+                double configured = 0; // noclip on applied the configured speed
+                if (on && e.node_id == kNoclip && cr_.ConfiguredSpeed(configured)) speed_ = configured;
+            } else {
+                Refused(what);
+            }
+        } else if (e.kind == SCO_WIDGET_SLIDER && e.node_id == kSpeed && std::isfinite(e.value) && e.value >= 1
+                   && e.value <= SC_CREATIVE_FLY_SPEED_MAX) {
+            if (cr_.SetFlySpeed(static_cast<float>(e.value)) == SCO_OK) {
+                speed_ = e.value;
+                std::snprintf(status_, sizeof(status_), "Noclip speed %.0f", e.value);
+            } else {
+                Refused("Noclip speed");
+            }
+        } else {
+            return;
+        }
+        (void)RenderPanel();
+    }
+
     CreativeService cr_;
+    bool panel_ = false;
+    double speed_ = 10;
+    char status_[256] = {};
 };
 
 }  // namespace
