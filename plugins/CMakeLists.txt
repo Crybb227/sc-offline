@@ -117,9 +117,13 @@ if(SCO_PICKER_TEST)
   add_test(NAME picker-module-workflow COMMAND picker-module-test
     $<TARGET_FILE:sc-offline-spawn> $<TARGET_FILE:sc-offline-crew> $<TARGET_FILE:sc-offline-npc>)
 endif()
-# Development consumer only until production G11/G12 and retained UI/wallet parity land.
-option(SCO_CONTRACTS_FEATURE "Build command-first contracts consumer (duplicate built-in ID; do not co-install)" OFF)
-if(SCO_CONTRACTS_FEATURE)
+# Ships in the release as the external contracts folder; the built-in is gone, so there is no
+# duplicate built-in ID and no co-install constraint. Providers are default OFF in sdk-v2.2.0.
+option(SCO_CONTRACTS_FEATURE "Build command-first contracts consumer" ON)
+if(SCO_CONTRACTS_FEATURE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/contracts/CMakeLists.txt")
+  # Proof trees configure this directory with a subset of the feature folders (check_npc_sdk.py,
+  # check_inspector_sdk.py); an absent consumer is not a configure error, the way multiplayer's
+  # missing SDK header isn't.
   add_subdirectory(contracts)
 endif()
 if(SCO_WORKFLOW_TESTS)

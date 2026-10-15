@@ -1,19 +1,19 @@
 #pragma once
 // sc-offline's built-in plugins: its features as plugins compiled into the DLL (sco-core's
 // docs/framework.md, Phase 4). Each is a sco::plugins::Builtin, the three plugin functions listed
-// in a table instead of exported from the DLL. StartHostKit hands kBuiltins to sco::app::Start,
-// which loads them before any plugin folder, with plugins on or off.
+// in a table instead of exported from the DLL. The shell registers none: G1 early DataCore refuses
+// builtin inputs, so every feature ships as an external plugin folder. These helpers remain for
+// the unbuilt *_plugin.cpp sources tools/check.sh still parses.
 #include "sco/plugins.h"
 #include "../version.h"   // SCO_VERSION: every built-in reports it in its sco_plugin_info
 #include <cstdint>
 #include <cstring>
 
-extern const sco::plugins::Builtin kContractsBuiltin;  // contracts_plugin.cpp: contracts.status, the contracts tick
+// Contracts ships as the external plugins/contracts folder; no built-in fallback.
 // Multiplayer uses the approved G13 broker as an external module, never this registry.
 // Bridges remain independent disabled external modules.
 
-// Remaining built-ins own their ticks; external features never have a host fallback.
-bool ContractsBuiltinOwnsTick();
+// External features never have a host fallback.
 
 // The index of the entry named `name` (any case) in a list of count names, or -1.
 inline int FindBuiltinName(int count, const char* (*nameAt)(int), const char* name) {
@@ -47,7 +47,3 @@ inline sco_result RegisterBuiltinCommand(const sco_api* api, sco_plugin* self, c
     c.fn = fn;
     return api->register_command(self, &c);
 }
-
-// Every built-in, in load order.
-inline const sco::plugins::Builtin kBuiltins[] = { kContractsBuiltin
-};

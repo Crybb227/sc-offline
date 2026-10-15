@@ -89,6 +89,22 @@ class ReleaseManifest(unittest.TestCase):
         os.remove(os.path.join(folder, "npc.dll"))
         self.assertEqual(rm.check(self.dir)[1], ["data/plugins/npc/npc.dll: missing"])
 
+    def test_external_contracts_files_are_covered(self):
+        folder = os.path.join(self.dir, "data", "plugins", "contracts")
+        os.makedirs(folder)
+        with open(os.path.join(HERE, "..", "plugins", "contracts", "plugin.ini"), "rb") as f:
+            self.put("data/plugins/contracts/plugin.ini", f.read())
+        self.put("data/plugins/contracts/contracts.dll", b"synthetic module fixture, not a PE binary")
+        _, count = rm.write(self.dir, "v0.7.0", COMMIT, self.vh)
+        self.assertEqual(count, 6)
+        paths = {e["path"] for e in json.loads(self.manifest())["files"]}
+        self.assertIn("data/plugins/contracts/plugin.ini", paths)
+        self.assertIn("data/plugins/contracts/contracts.dll", paths)
+        self.assertNotIn("data/plugins/contracts/disabled", paths)
+        self.assertEqual(rm.check(self.dir)[1], [])
+        os.remove(os.path.join(folder, "contracts.dll"))
+        self.assertEqual(rm.check(self.dir)[1], ["data/plugins/contracts/contracts.dll: missing"])
+
     def test_one_file_per_line(self):
         rm.write(self.dir, "v0.7.0", COMMIT, self.vh)
         file_lines = [l for l in self.manifest().splitlines() if '"path"' in l]
@@ -112,8 +128,19 @@ class ReleaseManifest(unittest.TestCase):
         version, _ = rm.write(self.dir, "v0.7.1-rc1", COMMIT, self.vh)
         self.assertEqual(version, "0.7.1-rc1")
 
+    def test_four_component_tag(self):
+        self.version("0.7.8.1")
+        version, _ = rm.write(self.dir, "v0.7.8.1", COMMIT, self.vh)
+        self.assertEqual(version, "0.7.8.1")
+        man = json.loads(self.manifest())
+        self.assertEqual((man["version"], man["tag"]), ("0.7.8.1", "v0.7.8.1"))
+        self.assertEqual(rm.check(self.dir)[1], [])
+        self.version("0.7.8")
+        with self.assertRaisesRegex(ValueError, "SCO_VERSION"):
+            rm.write(self.dir, "v0.7.8.1", COMMIT, self.vh)
+
     def test_bad_tag_and_commit(self):
-        for tag in ("0.7.0", "v0.7", "vfoo", "v0.7.0/x"):
+        for tag in ("0.7.0", "v0.7", "vfoo", "v0.7.0/x", "v0.7.8.1.2", "v0.7.8."):
             with self.assertRaises(ValueError):
                 rm.write(self.dir, tag, COMMIT, None)
         with self.assertRaises(ValueError):
