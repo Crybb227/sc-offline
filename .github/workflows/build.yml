@@ -192,14 +192,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Proofs: check_creative_sdk.py, check_discord_sdk.py, check_crew_sdk.py, check_spawn_sdk.py.
+  # Proofs: check_creative_sdk.py, check_discord_sdk.py, check_crew_sdk.py, check_spawn_sdk.py, check_build_sdk.py.
   # Isolated native features; checker and compiler traces use published archives only.
   external-sdk:
     strategy:
       fail-fast: false
       matrix:
         # mining requires the newly published game SDK; the old pin must refuse, not fall back.
-        feature: [creative, discord, crew, spawn, mining]
+        feature: [creative, discord, crew, spawn, build, mining]
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -395,7 +395,7 @@ jobs:
           mkdir -p "stage/$pkg/data/plugins/picker_catalog/lists"
           cp data/ships.txt data/npcs.txt "stage/$pkg/data/plugins/picker_catalog/lists/"
           # Independent folders; metadata/defaults from matching components.
-          for feature in creative discord crew spawn mining; do
+          for feature in creative discord crew spawn build mining; do
             mkdir -p "stage/$pkg/data/plugins/$feature"
             cp "built-external/$feature/plugin.ini" "built-external/$feature/$feature.dll" "stage/$pkg/data/plugins/$feature/"
             for f in plugin.ini "$feature.dll"; do test -f "stage/$pkg/data/plugins/$feature/$f"; done
@@ -406,7 +406,7 @@ jobs:
           done
           cp built-external/mining/import_settings.py "stage/$pkg/data/plugins/mining/import_settings.py"
           test -f "stage/$pkg/data/plugins/mining/import_settings.py"
-          for feature in crew spawn mining; do
+          for feature in crew spawn build mining; do
             test ! -e "built-external/$feature/disabled"
             test ! -e "stage/$pkg/data/plugins/$feature/disabled"
           done

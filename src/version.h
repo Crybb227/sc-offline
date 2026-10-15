@@ -6,6 +6,6 @@
 #define SCO_VERSION_MAJOR 0
 #define SCO_VERSION_MINOR 7
 #define SCO_VERSION_PATCH 8
-#define SCO_VERSION  "0.7.8.2"
+#define SCO_VERSION  "0.7.8.3"
 #define SCO_TITLE    "sc-offline v" SCO_VERSION
 #define SCO_BASED_ON "based on ChrisWareOffline 0.9.0-rc1"

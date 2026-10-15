@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.8.3 (2026-10-15)
+
+- **The Vehicles panel opens again.** In 0.7.8.x the spawn plugin's panel was refused at load (`[spawn] warning: Vehicles panel refused` in `mod.log`) because its empty owned-ship list broke the panel rules; spawn commands kept working. Not yet checked in game.
+- **The build plugin ships.** `data/plugins/build` is now in the release download, enabled, built against the published sco-core SDK 2.2.0 like the spawn and crew plugins. What it does: `build.place <class or ObjectContainers/.../name.socpak> <metres ahead, 0-100>` places an object on the ground ahead of you, `build.undo` removes the last one you placed, and `build.clear` removes everything it placed. Removal is requested, not confirmed: an object may take a moment to go. `build.status` reports the counts.
+- **What does not work yet.** Interactive build mode is not available: F6 (`build.toggle`), the free camera, aiming, the preview, and `build.select`, `build.aim`, `build.drop`, `build.rotate`, `build.reach` and `build.camera` all answer that the game service they need is not available. Placed objects are not kept across a plugin reload or a game restart; unloading the plugin removes them.
+- `build.undo` with nothing to undo now answers OK ("Nothing retained to undo") instead of an error, as the SDK's plugin checker requires of commands that take no arguments.
+- **Not run in game.** The plugin was built and checked on a development machine against the published SDK with no game services present; placing and removing objects in the game has not been tried.
+
 ## 0.7.8.2 (2026-10-15)
 
 - **Contracts work again.** Contracts run on the mod's own contracts engine, as in v0.7.7: the mobiGlas lists them about 15 seconds after you spawn, accepted missions run, rewards are paid, and kill objectives count deaths again. Your balance is kept in `data/wallet.txt`. The `contracts.status` command from v0.7.7 is not back, and `data/storage/contracts.db` is no longer updated. The `contracts` plugin still ships; it answers that its game services aren't available yet and does nothing else.
