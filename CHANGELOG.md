@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.8.1 (2026-10-15)
+
+- **The game starts again ([#134](https://github.com/scubamount/sc-offline/issues/134)).** v0.7.8 refused its own offline startup on every PC: `mod.log` showed `[app] offline admission/prepare refused: BAD_ARG`, no offline patch ran, the game closed about a quarter second after it opened, and the launcher then took the mod out again. Two causes, both fixed. The host handed sco-core's offline startup a built-in plugin it no longer accepts, and the mod could not show that the game was offline, so startup was refused. Behind that, startup had moved off the game's loading path, so the game ran ahead of the mod and closed before the offline patches landed.
+- **How the mod now knows the game is offline.** Inside the game, it reads Windows Firewall's rules for this exact `StarCitizen.exe` (the rules the launcher adds: everything outside your local network blocked, in and out, on every active network profile) and checks that the game has no open connection to the internet. Anything it can't read counts as not offline, and the mod refuses to start. `mod.log` shows one `[g1] evidence:` line with the result.
+- **The game waits for the mod at start-up.** The game is held at its first instruction until the mod's startup has finished (up to 60 seconds), so expect a pause of roughly 15 seconds before the game window appears.
+- **Contracts is a plugin now, and unavailable for the time being.** It leaves `dinput8.dll` and ships as `data/plugins/contracts`. It needs the missions and economy services that the pinned sco-core SDK 2.2.0 does not provide yet, so contracts commands refuse in game until a later SDK publishes them. Your wallet balance in `wallet.txt` is kept.
+- README: corrected recovery steps (status light, `uninstall`), current SDK status, and a new "What keeps you offline and safe" section.
+- Version 0.7.8.1; the release tooling accepts a fourth version number.
+
 ## 0.7.8 (2026-10-14)
 
 - **Pin the published sco-core SDK 2.2.0 release.** `external/sco-core` moves from `sdk-v2.1.0` to signed tag `sdk-v2.2.0`, approval commit `686187ce936400450d448f1fe754b1e58263e4af` (its archives were built from source commit `81437e1a12993a4484308bd76443a003ae57b7fa`). SDK **2.2.0**, plugin ABI **1.1** (unchanged), Star Citizen game pack **0.5.0**. The standalone-plugin CI jobs download `sco-sdk-2.2.0.zip` and verify it against the release `SHA256SUMS`. SDK 2.2.0 is additive (`sco.widgets` 1.1, `game.hangar` and `game.reputation` 1.0, `game.world` 1.1). The maintainer smoke-tested the R1 build in game on 2026-10-14; individual features were not separately verified in game.

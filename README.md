@@ -54,15 +54,14 @@ Spawn ships and buildings, travel the star systems and wear Squadron 42 outfits 
 >   [release notes](https://github.com/scubamount/sc-offline/releases/tag/v0.7.7) report that the
 >   maintainer ran it in game with NVIDIA Smooth Motion off. That was one run, not a check of
 >   each feature.
-> - **Current `main`** pins the published sco-core SDK **2.0.0** (tag `sdk-v2.0.0`, `cd9a686`;
->   plugin ABI 1.1, game pack 0.3.0) and ships NPC and the inspector as external plugins. It
->   has **not been run in game** ([what is not verified](docs/status.md)).
-> - **SDK 2.1.0:** draft PR [#126](https://github.com/scubamount/sc-offline/pull/126) (head
->   `0355c09`, all CI checks green) pins the published `sdk-v2.1.0` release (`8ef2424`, game pack
->   0.4.0). It is not merged and nothing on it has run in game — the in-game smoke test is still
->   outstanding — so `main` stays on SDK 2.0.0.
+> - **`v0.7.8`** pins the published sco-core SDK **2.2.0** (tag `sdk-v2.2.0`, `686187c`; plugin
+>   ABI 1.1, game pack 0.5.0) but **does not start the game**: its offline startup refuses
+>   ([#134](https://github.com/scubamount/sc-offline/issues/134)). Use v0.7.8.1 or v0.7.7.
+> - **`v0.7.8.1`** (pre-release) fixes that startup. On one test PC it reached the game's offline
+>   boot with every offline patch applied (`bOnline[0]` in `Game.log`); nobody has played it in
+>   game yet ([what is not verified](docs/status.md)).
 >
-> In-game verification of each capability, and of SDK 2.1.0, is still outstanding. Other PCs and game patches can behave differently; known problems are tracked
+> In-game verification of each capability is still outstanding. Other PCs and game patches can behave differently; known problems are tracked
 > in [Issues](https://github.com/scubamount/sc-offline/issues). If something breaks, see
 > [Troubleshooting](#troubleshooting) and [report it](https://github.com/scubamount/sc-offline/issues).
 > Linux through Wine is still untested.
@@ -259,7 +258,7 @@ Each release is built by [`.github/workflows/build.yml`](.github/workflows/build
 | --- | --- | --- |
 | `src/` (except `src/third_party/`), `launcher/`, `plugins/` | sc-offline's own code: the mod (`dinput8.dll`), the launcher (`sc-offline.exe`) and the plugin DLLs. The plugins compile against sco-core's SDK headers; NPC and inspector against the published SDK archive | GPL-3.0-only ([LICENSE](LICENSE)) |
 | `src/third_party/imgui/` | Dear ImGui 1.92.8 WIP, vendored; in `dinput8.dll` and `sc-offline.exe` | MIT |
-| `external/sco-core` (git submodule) | [sco-core](https://github.com/scubamount/sco-core) at the commit pinned for that release (on `main` today: `sdk-v2.0.0`, `cd9a686`): the host kit, game pack and plugin runtime, plus the Lua 5.4.8 (modified), SQLite 3.53.4 and toml++ 3.4.0 it vendors | sco-core: GPL-3.0-only; Lua and toml++: MIT; SQLite: public domain |
+| `external/sco-core` (git submodule) | [sco-core](https://github.com/scubamount/sco-core) at the commit pinned for that release (on `main` today: `sdk-v2.2.0`, `686187c`): the host kit, game pack and plugin runtime, plus the Lua 5.4.8 (modified), SQLite 3.53.4 and toml++ 3.4.0 it vendors | sco-core: GPL-3.0-only; Lua and toml++: MIT; SQLite: public domain |
 
 Licence texts and where each component ends up: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which also ships in the release zip.
 
