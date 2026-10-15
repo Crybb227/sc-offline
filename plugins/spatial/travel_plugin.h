@@ -428,8 +428,13 @@ inline sco_result Load(const sco_api* api,sco_plugin* self) {
     g.api=api; g.self=self;
     try {
         g.root=Setting("data_root","data");
-        const char* inherited=std::getenv("SC_OFFLINE_SPAWN_FILE");
-        g.spawn=Setting("spawn_file",inherited && *inherited ? inherited : (g.root/"spawn.txt").string());
+        std::string inherited;
+#ifdef _MSC_VER
+        { char* v=nullptr; size_t n=0; if (_dupenv_s(&v,&n,"SC_OFFLINE_SPAWN_FILE")==0 && v) inherited=v; std::free(v); }
+#else
+        if (const char* v=std::getenv("SC_OFFLINE_SPAWN_FILE")) inherited=v;
+#endif
+        g.spawn=Setting("spawn_file",!inherited.empty() ? inherited : (g.root/"spawn.txt").string());
         Storage();
 #ifdef TRAVEL_TELEPORT
         const auto loaded=LoadSaved();
