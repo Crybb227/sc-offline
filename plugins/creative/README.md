@@ -3,7 +3,8 @@
 Creative **1.1.0** is a command-first consumer of the published **sdk-v2.2.0**
 combined `sco-sdk-2.2.0.zip`: plugin ABI **1.1**, `game.creative` **1.0**, Star
 Citizen game pack **0.5.0**. Its module, manifest and empty `disabled` marker
-install under `data/plugins/creative/`. It stays **off by default**. No ImGui,
+install under `data/plugins/creative/`. It stays **off by default**. It also
+adds the menu's **Creative** tab through `sco.widgets` 1.0 (see below). No ImGui,
 private host symbols, engine pointers, network access or new SDK ABI is used.
 Native code is trusted code: the checker is not a sandbox.
 
@@ -72,6 +73,22 @@ not the persisted setting; the next noclip-on request reapplies that setting.
 With no settings service, noclip retains the existing game-speed behavior. A
 failed settings lookup is not cached or treated as success.
 
+## Creative tab
+
+After its commands register, the plugin adds a `sco.widgets` 1.0 panel
+`creative.panel` titled **Creative**: toggles for God mode, Noclip, Infinite ammo
+and Infinite ship ammo, a Noclip speed slider (1 to 10000 m/s) and a status line.
+Each control calls the same setter as its command (Noclip on applies the
+`noclip_speed` setting first, as `creative.noclip true` does), then the panel is
+redrawn from the provider's `state`, so a refused toggle flips back and the status
+line shows the provider's reason (or "see mod.log"). Toggles start from `state`
+(all off when it is unavailable); the slider starts from the `noclip_speed`
+setting, or 10 when that is unreadable. Opening the panel switches nothing on.
+
+When `sco.widgets` is absent or truncated, or refuses the panel, the plugin logs
+one warning and loads anyway; the commands do not depend on the tab. The panel
+is removed on unload. `sco_widgets.h` is one of the SDK headers CMake requires.
+
 ## Service and lifecycle boundary
 
 Every service use is freshly queried at the declared version. Each invoked
@@ -81,8 +98,9 @@ Missing, truncated or withdrawn providers return unavailable; provider refusal,
 wrong-thread and fault results remain failures, with a bounded provider reason
 when `last_error` is usable. Invalid arguments never reach setters.
 
-No borrowed service table is retained across commands. No worker, tick, tab,
-hotkey or settings subscription is installed. SDK command handlers are withdrawn
+No borrowed service table is retained across commands or panel events. No worker,
+tick, `sco.ui` tab, hotkey or settings subscription is installed; the Creative tab
+is the `sco.widgets` panel above. SDK command handlers are withdrawn
 on unload or failed load. The module makes **no extra setter calls on unload**:
 `game.creative` owns release-hook cleanup, which switches off only toggles still
 owned by Creative and restores its fly speed. Manually switching everything off
@@ -101,7 +119,11 @@ The named fixture dynamically loads the independently compiled native module,
 then tests complete and physically truncated host/service tails, null callbacks,
 failed lookup/reopen, capability refusal, invalid values, propagated provider
 errors, settings changes/refusals, unload twice, failed load, stale callback
-suppression, clean reload and physical module close/reopen. ASan/UBSan instrument
+suppression, clean reload and physical module close/reopen. A synthetic
+`sco.widgets` table re-checks the panel against sco-core's node rules and drives
+its toggle and slider events (including refusals, a refused panel and a
+missing/truncated renderer); the published checker also renders the panel's
+node list and delivers one toggle event. ASan/UBSan instrument
 those truncated allocations on development platforms; leak detection is disabled
 for the pinned SDK's intentionally process-lifetime callback registry.
 
