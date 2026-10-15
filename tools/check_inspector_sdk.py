@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SDK_ROOT = 'sco-sdk-2.2.0'
 SDK_ARCHIVE = SDK_ROOT + '.zip'
 SDK_SHA256 = '4b3ed980c424ef62665a9f496f877eb26850290d856e5eadefd0b514cca93538'
+# sdk-v2.3.0 (game.relocation 1.0): only the teleport and quantum proofs pass this pin.
+SDK_230 = ('sco-sdk-2.3.0', 'cc5e0678bd0a701f39ca11ed258f0a1e0a90cf7b1822cc6d3cb8dda0afd3a648')
 
 
 def run(argv, cwd, success=True):
@@ -36,22 +38,23 @@ def contained(path, root):
     return path == root or root in path.parents
 
 
-def verify_extract(archive, sums, destination):
-    if archive.name != SDK_ARCHIVE:
-        raise AssertionError(f'Expected published {SDK_ARCHIVE}, got {archive.name}')
+def verify_extract(archive, sums, destination, pin=None):
+    sdk_root, sdk_sha256 = pin or (SDK_ROOT, SDK_SHA256)
+    if archive.name != sdk_root + '.zip':
+        raise AssertionError(f'Expected published {sdk_root}.zip, got {archive.name}')
     rows = [line.split() for line in sums.read_text().splitlines() if line.strip()]
     hashes = [row[0] for row in rows if row[1].lstrip('*') == archive.name]
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if len(hashes) != 1 or digest != hashes[0] or digest != SDK_SHA256:
+    if len(hashes) != 1 or digest != hashes[0] or digest != sdk_sha256:
         raise AssertionError('Published SDK SHA256 mismatch')
     with zipfile.ZipFile(archive) as z:
         for item in z.infolist():
-            if not item.filename.startswith(SDK_ROOT + '/'):
+            if not item.filename.startswith(sdk_root + '/'):
                 raise AssertionError('Unexpected SDK archive root: ' + item.filename)
             if not contained((destination / item.filename).resolve(), destination.resolve()):
                 raise AssertionError('Unsafe SDK archive path')
         z.extractall(destination)
-    sdk = destination / SDK_ROOT
+    sdk = destination / sdk_root
     public, listed = set(), set()
     for line in (sdk / 'SHA256SUMS').read_text().splitlines():
         digest, name = line.split(None, 1)
@@ -72,7 +75,13 @@ def verify_extract(archive, sums, destination):
     return sdk, public
 
 
-def trace_posix(build, source, sdk, public, feature="inspector"):
+def own_source(p, source, feature, shared):
+    # A feature's own folder, the shared picker header, and only the sibling folders it names.
+    allowed = [source / 'plugins' / feature] + [source / 'plugins' / s for s in shared]
+    return (any(contained(p, d) for d in allowed) or p == source / 'plugins/picker.h') and p.is_file()
+
+
+def trace_posix(build, source, sdk, public, feature="inspector", shared=()):
     commands = json.loads((build / 'compile_commands.json').read_text())
     commands = [c for c in commands if any(t in c['command'] for t in
                 (f'CMakeFiles/sco-feature-{feature}.dir/', f'CMakeFiles/sc-offline-{feature}.dir/'))]
@@ -119,7 +128,7 @@ def trace_posix(build, source, sdk, public, feature="inspector"):
             elif contained(p, ROOT):
                 ok = False
             elif contained(p, source):
-                ok = (contained(p, source / 'plugins' / feature) or p == source / 'plugins/picker.h') and p.is_file()
+                ok = own_source(p, source, feature, shared)
             else:
                 ok = p in metadata or any(contained(p, d) for d in system)
             if not ok:
@@ -127,7 +136,7 @@ def trace_posix(build, source, sdk, public, feature="inspector"):
     print(f'{feature}: two full compiler dependency traces clean (including system headers)')
 
 
-def trace_windows(build, source, sdk, public, feature="inspector"):
+def trace_windows(build, source, sdk, public, feature="inspector", shared=()):
     count = 0
     for target in (f"sco-feature-{feature}", f"sc-offline-{feature}"):
         directory = build / "dependencies" / target
@@ -149,7 +158,7 @@ def trace_windows(build, source, sdk, public, feature="inspector"):
             elif contained(p, ROOT):
                 ok = False
             elif contained(p, source):
-                ok = (contained(p, source / "plugins" / feature) or p == source / "plugins/picker.h") and p.is_file()
+                ok = own_source(p, source, feature, shared)
             else:
                 ok = any(contained(p, d) for d in roots)
             if not ok:

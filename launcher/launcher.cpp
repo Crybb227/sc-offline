@@ -170,6 +170,9 @@ struct Config {
     bool discordOff = false;
     // Load plugins from data\plugins (sco-core's plugin loader). On by default.
     bool plugins = true;
+    // relocation: the host switch for sco-core's game.relocation (teleport F8, Travel, bookmarks). On by
+    // default; off turns it off for every plugin. On never bypasses sco-core's offline admission.
+    bool relocation = true;
     // The Multiplayer tab (co-presence over sco-core's sco.net): on by default, but nothing networks
     // until the player presses Host or Join. multiplayerAllow: extra IPv4 ranges (a VPN), checked.
     bool multiplayer = true;
@@ -252,6 +255,9 @@ static bool ReadConfig(const wstring& path, Config& c) {
         }
         else if (!_wcsicmp(k.c_str(), L"plugins")) {
             if (!ParseOnOff(v, c.plugins)) Out("[!] sc-offline.ini line %d: plugins must be on or off\n", lineNo);
+        }
+        else if (!_wcsicmp(k.c_str(), L"relocation")) {
+            if (!ParseOnOff(v, c.relocation)) Out("[!] sc-offline.ini line %d: relocation must be on or off\n", lineNo);
         }
         else if (!_wcsicmp(k.c_str(), L"multiplayer")) {
             if (!ParseOnOff(v, c.multiplayer)) Out("[!] sc-offline.ini line %d: multiplayer must be on or off\n", lineNo);
@@ -4290,6 +4296,7 @@ int wmain(int argc, wchar_t** argv) {
         SetVar(L"SC_OFFLINE_START", cfg.start);
         SetVar(L"SC_OFFLINE_START_SHIP", cfg.startShip);
         SetVar(L"SC_OFFLINE_PLUGINS", cfg.plugins ? L"on" : L"off");
+        SetVar(L"SC_OFFLINE_RELOCATION", cfg.relocation ? L"on" : L"off");
         SetVar(L"SC_OFFLINE_MULTIPLAYER", cfg.multiplayer ? L"on" : L"off");
         SetVar(L"SC_OFFLINE_MULTIPLAYER_ALLOW", cfg.multiplayerAllow);
         SetVar(L"SC_OFFLINE_ASOP", cfg.asop ? L"on" : L"off");
@@ -4297,9 +4304,9 @@ int wmain(int argc, wchar_t** argv) {
         SetVar(L"SC_USER", g.userDir);
         if (dry)
             Out("[dry-run] would set SC_OFFLINE_BOOT_MAP=%ls SC_OFFLINE_START_SHIP=%ls SC_OFFLINE_START=%ls SC_OFFLINE_PLUGINS=%ls\n"
-                "          SC_OFFLINE_ASOP=%ls; SC_OFFLINE_MOD_LOG, _SPAWN_FILE, _SHIPS_FILE under %ls; SC_USER=%ls\n",
+                "          SC_OFFLINE_RELOCATION=%ls SC_OFFLINE_ASOP=%ls; SC_OFFLINE_MOD_LOG, _SPAWN_FILE, _SHIPS_FILE under %ls; SC_USER=%ls\n",
                 cfg.bootMap.c_str(), cfg.startShip.c_str(), cfg.start.c_str(), cfg.plugins ? L"on" : L"off",
-                cfg.asop ? L"on" : L"off", data.c_str(), g.userDir.c_str());
+                cfg.relocation ? L"on" : L"off", cfg.asop ? L"on" : L"off", data.c_str(), g.userDir.c_str());
     }
 
     // 4. Change the game folder, through the helper (see the top of this file).

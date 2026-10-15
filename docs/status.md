@@ -14,6 +14,14 @@ Observed a second time by the maintainer, on a desktop session with the game run
 
 **NOT VERIFIED:** the build plugin in game. Owed: `build.place` with a class and with a `.socpak` path actually grounding an object ahead of the player, `build.undo` and `build.clear` actually removing what was placed (and only that), the plugin loading from the release folder on Windows, unload removing placements, and F6 refusing cleanly. Interactive build mode and the free camera stay unavailable until a production G5 adapter exists; placements are not kept across reloads.
 
+## 0.7.8.3: teleport and quantum travel
+
+`data/plugins/teleport` and `data/plugins/quantum` are staged enabled. `tools/check_teleport_sdk.py` and `tools/check_quantum_sdk.py` build them against the published `sdk-v2.3.0` archive, run the synthetic travel-model test and the quantum actual-module workflow (player switch, `game.relocation` capability, one request, tick tracking to complete and failed), trace compiler dependencies, run boundary negatives and a relocation red arm, and run the SDK's `sco-plugin-check` with no game services, where every move answers unavailable. That is a development-machine check, not a game run.
+
+**NOT VERIFIED:** any move in game. Owed: F7 then F8 returning to the saved spot; `quantum.travel` arriving at the destination radius plus the altitude (placed along the destination zone's own +Z axis, never checked); `quantum.bookmark`; the arrival, failure and cancellation messages; the plugin `relocation` setting and `sc-offline.ini` `relocation = off` refusing moves; both plugins loading from the release folder on Windows. Moves need this release's host (sco-core main e616ed6 or later) with offline admission, resolved engine rows, a live player and a known star system; without them they answer unavailable.
+
+**NOT VERIFIED:** the host switch in game. It is compiled in with this pin (CMake defines `SCO_OFFLINE_RELOCATION_SWITCH` because the pinned sco-core declares `SetRelocationEnabled`). It was syntax-checked with the define but not run in game.
+
 ## Optional co-presence module
 
 Its source is maintained in [scubamount/sc-mp](https://github.com/scubamount/sc-mp);
@@ -25,7 +33,7 @@ Since v0.7.8.1 the shell reports offline-session and network
 evidence from live firewall and connection reads (see above); it still never infers
 safety from flags or patch success.
 
-The host is pinned to published sco-core `sdk-v2.2.0`, commit `686187ce936400450d448f1fe754b1e58263e4af` (the release approval commit; the release archives were built from `81437e1a12993a4484308bd76443a003ae57b7fa`): SDK **2.2.0**, plugin ABI **1.1** (unchanged), Star Citizen game pack **0.5.0**. The game pack's signature evidence targets Star Citizen **4.10.196.36804**; it is not a game-session result for this product pin.
+The host is pinned to sco-core `main` at commit `e616ed69d8f9f77b0f4827881c86d91e4a7d1689`, after the published `sdk-v2.3.0` (it adds the `game.relocation` production path and the `game.quantum` backend; the external plugins still build against the published SDK archives): SDK baseline **2.3.0**, plugin ABI **1.1** (unchanged), Star Citizen game pack **0.5.0**. The game pack's signature evidence targets Star Citizen **4.10.196.36804**; it is not a game-session result for this product pin.
 
 The release-pin smoke checks: offline startup was **observed once** for v0.7.8.1 (above); EAC detection/refusal, services published before plugins, menu and clean exit remain **NOT RUN** in game. CI build success does not close these owner-run checks.
 
@@ -33,7 +41,7 @@ The release-pin smoke checks: offline startup was **observed once** for v0.7.8.1
 releases; owner Windows/in-game acceptance remains **NOT RUN**. No synthetic
 fixture or checker result certifies gameplay. Policy: [decisions.md](decisions.md).
 
-sco-core keeps the matching table for the `game.*` services, with the evidence level of each capability and what a run has to show: [docs/game/status.md](https://github.com/scubamount/sco-core/blob/686187ce936400450d448f1fe754b1e58263e4af/docs/game/status.md) at the pinned commit. Read it for the service side (for example `game.actors.state`, `game.entities.query_radius`, `game.entities.watch` and `game.events.vehicle_seat` are held **off** until a run decides them). This page lists the sc-offline side: what each converted feature still needs checked. The steps are the ones in the bodies of [#95](https://github.com/scubamount/sc-offline/pull/95), [#97](https://github.com/scubamount/sc-offline/pull/97) and [#98](https://github.com/scubamount/sc-offline/pull/98); `mod.log` lines are quoted as those PRs wrote them.
+sco-core keeps the matching table for the `game.*` services, with the evidence level of each capability and what a run has to show: [docs/game/status.md](https://github.com/scubamount/sco-core/blob/e616ed69d8f9f77b0f4827881c86d91e4a7d1689/docs/game/status.md) at the pinned commit. Read it for the service side (for example `game.actors.state`, `game.entities.query_radius`, `game.entities.watch` and `game.events.vehicle_seat` are held **off** until a run decides them). This page lists the sc-offline side: what each converted feature still needs checked. The steps are the ones in the bodies of [#95](https://github.com/scubamount/sc-offline/pull/95), [#97](https://github.com/scubamount/sc-offline/pull/97) and [#98](https://github.com/scubamount/sc-offline/pull/98); `mod.log` lines are quoted as those PRs wrote them.
 
 ## Step 7B: tutorial evidence ledger
 
@@ -50,8 +58,8 @@ SDK pin and 13 baseline + 2 optional feature inventory are unchanged.
 Crew and ordinary spawn ship as enabled external folders; their host registrations,
 linked UI and tick fallbacks are removed. Creative stays off; Discord stays off and
 refuses presence pending approved transport/privacy policy. The current host registry has two built-ins (contracts, mining); the release recipe
-stages seven external native IDs (spawn, crew, build, npc, inspector, creative, discord).
-Teleport, quantum and loadout have external implementations not yet staged
+stages nine external native IDs (spawn, crew, build, npc, inspector, teleport, quantum, creative, discord).
+Loadout has an external implementation not yet staged
 there, and multiplayer is unregistered at this revision: 13 baseline IDs remain.
 Two optional bridge modules and supporting data packs are counted separately.
 Older command fixtures used published SDK 2.0.0, not engine evidence.

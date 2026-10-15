@@ -3,6 +3,7 @@
 #include "sco_api.h"
 #include "sc_game_spatial.h"
 #include "sc_spatial.h"
+#include "sc_relocation.h"
 #include <cstddef>
 #include <cmath>
 #include <cstdio>
@@ -109,6 +110,41 @@ inline sco_result Scan(const sc_game_spatial_v1* sp,std::vector<sc_game_zone>& o
     }
     return SCO_UNAVAILABLE;
 }
-inline sco_result Relocate() { return SCO_UNAVAILABLE; }
-inline constexpr const char* refusal="Player relocation unavailable: G2 mutation is not approved; no private fallback";
+// game.relocation 1.0 (sc_relocation.h): one request per move, tracked by ticket across ticks.
+inline constexpr uint32_t relocation_timeout_ms=30000;
+inline constexpr const char* unavailable="Player relocation unavailable: game.relocation is off (needs a host on sco-core main e616ed6 or later, offline admission, a live player and a known star system); not moved";
+inline constexpr const char* switched_off="Moving the player is off in this plugin's settings (relocation = false); not moved";
+// Fresh capability and full member extents before every request; ticket unchanged on refusal.
+inline sco_result Relocate(const sco_api* api,const sc_relocation_v1* service,sco_plugin* self,const Pose& target,uint64_t& ticket) {
+    if (!TRAVEL_FN(api,sco_api,has) || !api->has(SC_RELOCATION_NAME)) return SCO_UNAVAILABLE;
+    if (!TRAVEL_FN(service,sc_relocation_v1,request) || !TRAVEL_FN(service,sc_relocation_v1,status)) return SCO_UNAVAILABLE;
+    if (!target.zone || !Valid(target)) return SCO_BAD_ARG;
+    sc_relocation_request q{}; q.size=sizeof(q); q.timeout_ms=relocation_timeout_ms; q.zone_id=target.zone;
+    for (int i=0;i<3;++i) q.pos[i]=target.pos[i];
+    for (int i=0;i<4;++i) q.rot_xyzw[i]=target.rot[i];
+    uint64_t next=0; const auto r=service->request(self,&q,&next);
+    if (r!=SCO_OK) return r;
+    if (!next) return SCO_FAILED;
+    ticket=next; return SCO_OK;
+}
+inline sco_result Poll(const sc_relocation_v1* service,sco_plugin* self,uint64_t ticket,sc_relocation_status& out) {
+    if (!ticket || !TRAVEL_FN(service,sc_relocation_v1,status)) return SCO_UNAVAILABLE;
+    sc_relocation_status s{}; s.size=sizeof(s);
+    const auto r=service->status(self,ticket,&s);
+    if (r!=SCO_OK) return r;
+    if ((s.ticket && s.ticket!=ticket) || s.state<SC_RELOCATION_PENDING || s.state>SC_RELOCATION_FAILED) return SCO_FAILED;
+    out=s; return SCO_OK;
+}
+inline const char* ReasonText(uint32_t reason) {
+    switch (reason) {
+    case SC_RELOCATION_REASON_TIMEOUT: return "timed out";
+    case SC_RELOCATION_REASON_SESSION: return "session, player or star system changed";
+    case SC_RELOCATION_REASON_SAFETY: return "offline admission or relocation switch no longer allows it";
+    case SC_RELOCATION_REASON_SYSTEM: return "destination is not in your current star system";
+    case SC_RELOCATION_REASON_TRANSPORT: return "the game did not start the move";
+    case SC_RELOCATION_REASON_FAULT: return "relocation provider fault";
+    case SC_RELOCATION_REASON_NONE: return "no reason given";
+    default: return "unknown reason";
+    }
+}
 }

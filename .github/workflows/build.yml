@@ -192,15 +192,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Proofs: check_creative_sdk.py, check_discord_sdk.py, check_crew_sdk.py, check_spawn_sdk.py, check_build_sdk.py.
+  # Proofs: check_creative_sdk.py, check_discord_sdk.py, check_crew_sdk.py, check_spawn_sdk.py, check_build_sdk.py,
+  # check_teleport_sdk.py, check_quantum_sdk.py.
   # Isolated native features; checker and compiler traces use published archives only.
+  # teleport and quantum consume sdk-v2.3.0 (game.relocation 1.0); the others stay on sdk-v2.2.0.
   external-sdk:
     strategy:
       fail-fast: false
       matrix:
         # mining requires the newly published game SDK; the old pin must refuse, not fall back.
-        feature: [creative, discord, crew, spawn, build, mining]
+        feature: [creative, discord, crew, spawn, build, mining, teleport, quantum]
     runs-on: windows-2025-vs2026
+    env:
+      SDK_VERSION: ${{ (matrix.feature == 'teleport' || matrix.feature == 'quantum') && '2.3.0' || '2.2.0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -208,11 +212,11 @@ jobs:
       - name: Download published SDK
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download sdk-v2.2.0 -R scubamount/sco-core -p 'sco-sdk-2.2.0.zip' -p SHA256SUMS -D "$env:RUNNER_TEMP/sdk-assets"
+        run: gh release download "sdk-v$env:SDK_VERSION" -R scubamount/sco-core -p "sco-sdk-$env:SDK_VERSION.zip" -p SHA256SUMS -D "$env:RUNNER_TEMP/sdk-assets"
       - name: Build, test, check and stage independent feature
         env:
           FEATURE: ${{ matrix.feature }}
-        run: python "tools/check_${env:FEATURE}_sdk.py" --archive "$env:RUNNER_TEMP/sdk-assets/sco-sdk-2.2.0.zip" --sums "$env:RUNNER_TEMP/sdk-assets/SHA256SUMS" --work "$env:RUNNER_TEMP/feature-proof"
+        run: python "tools/check_${env:FEATURE}_sdk.py" --archive "$env:RUNNER_TEMP/sdk-assets/sco-sdk-$env:SDK_VERSION.zip" --sums "$env:RUNNER_TEMP/sdk-assets/SHA256SUMS" --work "$env:RUNNER_TEMP/feature-proof"
       - name: Upload published-SDK release folder
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -395,7 +399,7 @@ jobs:
           mkdir -p "stage/$pkg/data/plugins/picker_catalog/lists"
           cp data/ships.txt data/npcs.txt "stage/$pkg/data/plugins/picker_catalog/lists/"
           # Independent folders; metadata/defaults from matching components.
-          for feature in creative discord crew spawn build mining; do
+          for feature in creative discord crew spawn build mining teleport quantum; do
             mkdir -p "stage/$pkg/data/plugins/$feature"
             cp "built-external/$feature/plugin.ini" "built-external/$feature/$feature.dll" "stage/$pkg/data/plugins/$feature/"
             for f in plugin.ini "$feature.dll"; do test -f "stage/$pkg/data/plugins/$feature/$f"; done
@@ -406,7 +410,7 @@ jobs:
           done
           cp built-external/mining/import_settings.py "stage/$pkg/data/plugins/mining/import_settings.py"
           test -f "stage/$pkg/data/plugins/mining/import_settings.py"
-          for feature in crew spawn build mining; do
+          for feature in crew spawn build mining teleport quantum; do
             test ! -e "built-external/$feature/disabled"
             test ! -e "stage/$pkg/data/plugins/$feature/disabled"
           done
